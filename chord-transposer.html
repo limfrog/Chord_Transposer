@@ -121,6 +121,14 @@
       </div>
       <div style="margin-top:10px">
         <div class="row" style="justify-content:space-between; margin-bottom:4px;">
+          <span style="font-size:12px; color:var(--muted);">모델 확신도 (음표머리 등 오탐 거르기)</span>
+          <span style="font-size:12px; color:var(--paper); font-weight:600;" id="modelConfVal">50%</span>
+        </div>
+        <input type="range" id="modelConfSlider" min="0" max="90" value="50" style="width:100%; accent-color:var(--pencil);">
+        <div class="hint" style="margin-top:2px;">코드 글자가 아닌 것(음표머리 등)을 억지로 읽으면 모델이 확신을 못 갖는 경향을 이용합니다. 놓친 코드가 있으면 낮추고, 엉뚱한 박스가 많으면 올리세요.</div>
+      </div>
+      <div style="margin-top:10px">
+        <div class="row" style="justify-content:space-between; margin-bottom:4px;">
           <span style="font-size:12px; color:var(--muted);">감도 (오선 검출 실패 시에만 적용)</span>
           <span style="font-size:12px; color:var(--paper); font-weight:600;" id="confVal">35</span>
         </div>
@@ -226,10 +234,15 @@ let semitones = 0;
 let accPref = 'auto';
 let addMode = false;
 let confThreshold = 35; // Tesseract 위치 검출 신뢰도 하한 — 한글 등 라틴 문자가 아닌 형태를 거르는 용도
+let modelConfThreshold = 0.5; // 커스텀 모델의 판독 확신도 하한 — 음표머리 등 코드가 아닌 입력을 거르는 용도
 
 document.getElementById('confSlider').addEventListener('input', e=>{
   confThreshold = Number(e.target.value);
   document.getElementById('confVal').textContent = confThreshold;
+});
+document.getElementById('modelConfSlider').addEventListener('input', e=>{
+  modelConfThreshold = Number(e.target.value) / 100;
+  document.getElementById('modelConfVal').textContent = e.target.value + '%';
 });
 let worker = null;
 
@@ -588,9 +601,11 @@ function cropForModel(srcImage, srcW, srcH, x0, y0, x1, y1){
 
 function ctcGreedyDecodeBatch(flatData, dims){
   const [T, N, C] = dims;
-  const results = [];
+  const texts = [];
+  const confidences = [];
   for(let n = 0; n < N; n++){
     let prev = -1, chars = [];
+    let probSum = 0;
     for(let t = 0; t < T; t++){
       const base = t*N*C + n*C;
       let best = 0, bestVal = -Infinity;
@@ -598,16 +613,19 @@ function ctcGreedyDecodeBatch(flatData, dims){
         const v = flatData[base+c];
         if(v > bestVal){ bestVal = v; best = c; }
       }
+      probSum += Math.exp(bestVal); // log-softmax -> 확률
       if(best !== prev && best !== 0) chars.push(MODEL_CHARS[best-1]); // 0 = CTC blank
       prev = best;
     }
-    results.push(chars.join(''));
+    texts.push(chars.join(''));
+    confidences.push(probSum / T); // 전체 타임스텝 평균 확신도 — 진짜 문자가 아닌 입력(음표머리 등)은
+                                     // 모델이 애매하게 답할 가능성이 높아 이 값이 낮게 나오는 경향이 있음
   }
-  return results;
+  return { texts, confidences };
 }
 
 async function recognizeBoxesWithModel(srcImage, srcW, srcH, boxes){
-  if(boxes.length === 0) return [];
+  if(boxes.length === 0) return { texts: [], confidences: [] };
   const session = await loadOrtModel();
   const N = boxes.length;
   const batch = new Float32Array(N * MODEL_IMG_H * MODEL_IMG_W);
@@ -718,14 +736,15 @@ async function runOcr(){
     setStatus(`코드 판독 중… (커스텀 모델, 후보 ${boxes.length}개)`);
     await loadOrtModel();
     progBar.style.width = '55%';
-    const texts = await recognizeBoxesWithModel(cvGray, cv.width, cv.height, boxes);
+    const { texts, confidences } = await recognizeBoxesWithModel(cvGray, cv.width, cv.height, boxes);
     progBar.style.width = '95%';
 
     let found = 0;
     const rotCx = cv.width/2, rotCy = cv.height/2;
     boxes.forEach((box, i) => {
       const text = texts[i];
-      if(!isChordLike(text)) return; // 모델 출력이 코드 문법과 안 맞으면 (가사 등으로 판단) 버림
+      if(!isChordLike(text)) return; // 모델 출력이 코드 문법과 안 맞으면 (음표머리 등으로 판단) 버림
+      if(confidences[i] < modelConfThreshold) return; // 모델이 확신 없이 답한 경우도 버림
       // 회전 보정된 좌표계 → 원본 이미지 좌표계로 역회전 + 축소
       const orig = boxFromRotatedToOriginal(box.x0, box.y0, box.x1, box.y1, rotCx, rotCy, deskewAngle);
       chords.push({
