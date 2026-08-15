@@ -119,6 +119,14 @@
         <button class="btn primary grow" id="btnOcr" disabled>코드 인식 실행</button>
         <button class="btn" id="btnAdd" disabled title="인식 못한 코드를 직접 드래그로 추가">+ 직접 추가</button>
       </div>
+      <div style="margin-top:10px">
+        <div class="row" style="justify-content:space-between; margin-bottom:4px;">
+          <span style="font-size:12px; color:var(--muted);">감도 (한글 가사 등 오탐 거르기)</span>
+          <span style="font-size:12px; color:var(--paper); font-weight:600;" id="confVal">35</span>
+        </div>
+        <input type="range" id="confSlider" min="0" max="70" value="35" style="width:100%; accent-color:var(--pencil);">
+        <div class="hint" style="margin-top:2px;">높일수록 가사 등 오탐은 줄지만 흐릿한 코드도 놓칠 수 있어요. 놓친 코드는 "+ 직접 추가"로 보완하세요.</div>
+      </div>
       <div id="progress"><i></i></div>
       <div id="status">이미지를 먼저 불러오세요.</div>
       <a href="#" id="debugLink" style="display:none; font-size:12px; color:var(--muted); text-decoration:underline;">전처리 이미지 확인 (위치 인식 단계)</a>
@@ -217,6 +225,12 @@ let selectedId = null;
 let semitones = 0;
 let accPref = 'auto';
 let addMode = false;
+let confThreshold = 35; // Tesseract 위치 검출 신뢰도 하한 — 한글 등 라틴 문자가 아닌 형태를 거르는 용도
+
+document.getElementById('confSlider').addEventListener('input', e=>{
+  confThreshold = Number(e.target.value);
+  document.getElementById('confVal').textContent = confThreshold;
+});
 let worker = null;
 
 const $ = id => document.getElementById(id);
@@ -402,12 +416,15 @@ async function runOcr(){
     setStatus('글자 위치 찾는 중…');
     const { data } = await worker.recognize(cv);
     const rawWords = data.words || [];
-    // Tesseract는 "위치"만 신뢰하고 글자 판독은 하지 않음 — 너무 작은 박스만 걸러냄
+    // Tesseract는 "위치"만 신뢰하고 글자 판독은 하지 않지만, confidence는 여전히 쓸모 있다:
+    // 학습에 없는 형태(한글 등)는 영어 문자 모양과 안 맞아서 대체로 낮은 confidence로 나온다.
+    // → 이 값을 "라틴 문자스러움" 필터로 재활용해 가사 등 오탐을 줄인다.
     const boxes = [];
     for(const w of rawWords){
       const b = w.bbox;
       const bw = (b.x1 - b.x0) / scale, bh = (b.y1 - b.y0) / scale;
-      if(bw < 5 || bh < 5) continue;
+      if(bw < 8 || bh < 8) continue;
+      if(w.confidence < confThreshold) continue;
       boxes.push({ x0: b.x0/scale, y0: b.y0/scale, x1: b.x1/scale, y1: b.y1/scale });
     }
     progBar.style.width = '45%';
