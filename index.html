@@ -1,0 +1,667 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>코드 이조기 — 악보 이미지 코드 트랜스포즈</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/tesseract.js/5.1.1/tesseract.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.27.0/dist/ort.min.js"></script>
+<style>
+  :root{
+    --bg:#171a21; --panel:#20242e; --panel2:#262b37; --line:#333a4b;
+    --text:#e9e7df; --muted:#9aa0ae; --pencil:#e2574a; --pencil-soft:rgba(226,87,74,.14);
+    --paper:#efe9dc; --ok:#7fb069;
+  }
+  *{box-sizing:border-box; margin:0; padding:0;}
+  body{background:var(--bg); color:var(--text); font-family:-apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo","Malgun Gothic",sans-serif; min-height:100vh;}
+  header{display:flex; align-items:baseline; gap:14px; padding:18px 22px 14px; border-bottom:1px solid var(--line);}
+  header h1{font-family:Georgia,"Times New Roman",serif; font-size:22px; font-weight:700; letter-spacing:.5px;}
+  header h1 .flat{color:var(--pencil); font-style:italic;}
+  header .sub{color:var(--muted); font-size:12.5px;}
+  .layout{display:grid; grid-template-columns:1fr 340px; gap:16px; padding:16px 22px; align-items:start;}
+  @media(max-width:900px){ .layout{grid-template-columns:1fr;} }
+
+  /* ---------- image area ---------- */
+  .stage{background:var(--panel); border:1px solid var(--line); border-radius:10px; overflow:hidden;}
+  .tabs{display:flex; border-bottom:1px solid var(--line);}
+  .tabs button{flex:1; background:none; border:none; color:var(--muted); padding:11px 0; font-size:13.5px; cursor:pointer; border-bottom:2px solid transparent;}
+  .tabs button.active{color:var(--text); border-bottom-color:var(--pencil); font-weight:600;}
+  .tabs button:focus-visible{outline:2px solid var(--pencil); outline-offset:-2px;}
+  .stage-body{padding:14px; min-height:340px; display:flex; align-items:center; justify-content:center;}
+  .drop{border:1.5px dashed var(--line); border-radius:8px; width:100%; min-height:320px; display:flex; flex-direction:column; gap:10px; align-items:center; justify-content:center; color:var(--muted); cursor:pointer; text-align:center; padding:20px;}
+  .drop.hover{border-color:var(--pencil); background:var(--pencil-soft);}
+  .drop .big{font-size:15px; color:var(--text);}
+  .drop kbd{background:var(--panel2); border:1px solid var(--line); border-radius:4px; padding:1px 6px; font-size:11px;}
+  #imgWrap{position:relative; width:100%; display:none; line-height:0;}
+  #imgWrap img{width:100%; border-radius:4px;}
+  #imgWrap.adding{cursor:crosshair;}
+  .cbox{position:absolute; border:2px solid var(--pencil); border-radius:3px; cursor:pointer; background:transparent;}
+  .cbox.off{border-color:#6b7180; border-style:dashed; opacity:.55;}
+  .cbox.sel{box-shadow:0 0 0 3px rgba(226,87,74,.35);}
+  .cbox .tag{position:absolute; left:-2px; top:-20px; background:var(--pencil); color:#fff; font-size:11px; font-weight:700; padding:1px 6px; border-radius:3px; white-space:nowrap; line-height:16px;}
+  .cbox.off .tag{background:#6b7180;}
+  #outCanvas{width:100%; border-radius:4px; display:none;}
+  #tempBox{position:absolute; border:2px dashed var(--pencil); background:var(--pencil-soft); display:none; pointer-events:none;}
+
+  /* ---------- side panel ---------- */
+  .side{display:flex; flex-direction:column; gap:14px;}
+  .card{background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px;}
+  .card h2{font-size:12px; color:var(--muted); font-weight:600; letter-spacing:1px; margin-bottom:10px;}
+  .btn{background:var(--panel2); color:var(--text); border:1px solid var(--line); border-radius:7px; padding:9px 12px; font-size:13.5px; cursor:pointer;}
+  .btn:hover{border-color:#4a5268;}
+  .btn:focus-visible{outline:2px solid var(--pencil); outline-offset:1px;}
+  .btn.primary{background:var(--paper); color:#1c1c1c; border-color:var(--paper); font-weight:700;}
+  .btn.primary:disabled{opacity:.45; cursor:default;}
+  .btn.accent{background:var(--pencil); border-color:var(--pencil); color:#fff; font-weight:600;}
+  .btn.sm{padding:5px 9px; font-size:12px;}
+  .row{display:flex; gap:8px; align-items:center; flex-wrap:wrap;}
+  .grow{flex:1;}
+  /* transpose dial */
+  .dial{display:flex; align-items:center; justify-content:center; gap:14px; margin:6px 0 10px;}
+  .dial .num{font-family:Georgia,serif; font-size:44px; font-weight:700; min-width:96px; text-align:center; color:var(--paper);}
+  .dial .num small{font-size:14px; color:var(--muted); display:block; font-family:inherit;}
+  .dial button{width:40px; height:40px; border-radius:50%; font-size:20px;}
+  .keysel{display:flex; gap:6px; align-items:center; font-size:13px; color:var(--muted); flex-wrap:wrap;}
+  select,input[type=text]{background:var(--panel2); border:1px solid var(--line); color:var(--text); border-radius:6px; padding:7px 8px; font-size:13.5px;}
+  input[type=text]:focus,select:focus{outline:2px solid var(--pencil); outline-offset:0;}
+  .seg{display:flex; border:1px solid var(--line); border-radius:7px; overflow:hidden;}
+  .seg button{flex:1; background:none; border:none; color:var(--muted); padding:7px 0; font-size:13px; cursor:pointer;}
+  .seg button.on{background:var(--pencil); color:#fff; font-weight:600;}
+  #progress{height:5px; background:var(--panel2); border-radius:3px; overflow:hidden; display:none; margin-top:10px;}
+  #progress i{display:block; height:100%; width:0; background:var(--pencil); transition:width .2s;}
+  #status{font-size:12px; color:var(--muted); margin-top:7px; min-height:16px;}
+  /* chord list */
+  #chordList{display:flex; flex-direction:column; gap:6px; max-height:320px; overflow-y:auto;}
+  .citem{display:flex; align-items:center; gap:8px; background:var(--panel2); border:1px solid var(--line); border-radius:7px; padding:6px 8px;}
+  .citem.sel{border-color:var(--pencil);}
+  .citem input[type=checkbox]{accent-color:var(--pencil); width:15px; height:15px; flex-shrink:0;}
+  .citem input[type=text]{width:76px; padding:4px 6px; font-weight:600;}
+  .citem .arrow{color:var(--muted); font-size:12px;}
+  .citem .result{font-weight:700; color:var(--pencil); font-size:14px; min-width:52px;}
+  .citem .del{margin-left:auto; background:none; border:none; color:var(--muted); cursor:pointer; font-size:15px; padding:2px 5px;}
+  .citem .del:hover{color:var(--pencil);}
+  .empty{color:var(--muted); font-size:13px; text-align:center; padding:14px 0;}
+  .hint{font-size:12px; color:var(--muted); line-height:1.6; margin-top:8px;}
+  @media(prefers-reduced-motion:reduce){ *{transition:none!important;} }
+</style>
+</head>
+<body>
+<header>
+  <h1><span class="flat">♭</span> 코드 이조기</h1>
+  <span class="sub">악보 이미지의 코드를 인식해 원하는 조성으로 일괄 변환</span>
+</header>
+
+<div class="layout">
+  <!-- ================= 이미지 영역 ================= -->
+  <div class="stage">
+    <div class="tabs">
+      <button id="tabEdit" class="active">① 인식 · 검수</button>
+      <button id="tabResult">② 결과 미리보기</button>
+    </div>
+    <div class="stage-body">
+      <div class="drop" id="drop" tabindex="0">
+        <div class="big">악보 이미지를 여기에 놓거나 클릭해서 선택</div>
+        <div>PNG · JPG 지원 &nbsp;|&nbsp; <kbd>Ctrl</kbd>+<kbd>V</kbd> 붙여넣기 가능</div>
+      </div>
+      <div id="imgWrap">
+        <img id="srcImg" alt="원본 악보">
+        <div id="tempBox"></div>
+      </div>
+      <canvas id="outCanvas"></canvas>
+    </div>
+  </div>
+
+  <!-- ================= 사이드 패널 ================= -->
+  <div class="side">
+    <div class="card">
+      <h2>1 · 코드 인식 <span style="color:var(--muted); font-weight:400; letter-spacing:0;">(위치: Tesseract · 판독: 커스텀 모델 v1)</span></h2>
+      <div class="row">
+        <button class="btn primary grow" id="btnOcr" disabled>코드 인식 실행</button>
+        <button class="btn" id="btnAdd" disabled title="인식 못한 코드를 직접 드래그로 추가">+ 직접 추가</button>
+      </div>
+      <div id="progress"><i></i></div>
+      <div id="status">이미지를 먼저 불러오세요.</div>
+      <a href="#" id="debugLink" style="display:none; font-size:12px; color:var(--muted); text-decoration:underline;">전처리 이미지 확인 (위치 인식 단계)</a>
+      <img id="debugImg" alt="OCR 전처리 이미지" style="display:none; width:100%; margin-top:8px; border:1px solid var(--line); border-radius:6px;">
+    </div>
+
+    <div class="card">
+      <h2>2 · 이조 설정</h2>
+      <div class="dial">
+        <button class="btn" id="btnMinus" aria-label="반음 내림">−</button>
+        <div class="num"><span id="semiVal">0</span><small>반음</small></div>
+        <button class="btn" id="btnPlus" aria-label="반음 올림">＋</button>
+      </div>
+      <div class="keysel">
+        <span>키 기준:</span>
+        <select id="fromKey"></select>
+        <span>→</span>
+        <select id="toKey"></select>
+      </div>
+      <div style="height:10px"></div>
+      <div class="seg" role="group" aria-label="임시표 표기">
+        <button data-pref="auto" class="on">자동</button>
+        <button data-pref="sharp">♯ 우선</button>
+        <button data-pref="flat">♭ 우선</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>3 · 인식된 코드 <span id="cnt" style="color:var(--pencil)"></span></h2>
+      <div class="row" style="margin-bottom:8px">
+        <button class="btn sm" id="btnAll">전체 포함</button>
+        <button class="btn sm" id="btnNone">전체 제외</button>
+      </div>
+      <div id="chordList"><div class="empty">아직 인식된 코드가 없습니다.</div></div>
+      <div class="hint">이미지의 빨간 박스를 클릭하면 포함/제외가 전환됩니다. 잘못 읽힌 코드는 목록에서 직접 수정하세요.</div>
+    </div>
+
+    <div class="card">
+      <h2>4 · 내보내기</h2>
+      <button class="btn accent" id="btnSave" style="width:100%" disabled>PNG로 저장</button>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ==================== 음악 이론 ==================== */
+const NOTE_PC = {C:0,D:2,E:4,F:5,G:7,A:9,B:11};
+const SHARP = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+const FLAT  = ['C','Db','D','Eb','E','F','Gb','G','Ab','A','Bb','B'];
+const AUTO  = ['C','Db','D','Eb','E','F','F#','G','Ab','A','Bb','B'];
+const KEYS  = ['C','Db','D','Eb','E','F','F#','G','Ab','A','Bb','B'];
+
+// 일반 코드(C, F#m7, Bb/D) + 루트 없이 베이스만 적은 축약 표기(/D, /F#) 모두 허용
+const CHORD_RE = /^(?:(?<root>[A-G])(?<acc>[#b]?)(?<quality>(?:maj|min|add|sus|dim|aug|alt|M|m|\d|[#b()+\-°øΔ])*)(?:\/(?<bass>[A-G])(?<bassAcc>[#b]?))?|\/(?<bassOnlyRoot>[A-G])(?<bassOnlyAcc>[#b]?))$/;
+
+function norm(t){
+  return t.normalize('NFKC')
+    .replace(/[♯＃]/g,'#').replace(/[♭]/g,'b')
+    .replace(/[–—−]/g,'-')
+    .replace(/[.,:;|'"`]+$/,'')
+    .trim();
+}
+function isChordLike(raw){
+  const t = norm(raw);
+  if(t.length < 1 || t.length > 10) return false;
+  return CHORD_RE.test(t);
+}
+function transposeChord(raw, semis, pref){
+  const t = norm(raw);
+  const m = CHORD_RE.exec(t);
+  if(!m) return t; // 파싱 실패 시 원문 유지
+  const g = m.groups;
+  const table = pref==='sharp' ? SHARP : pref==='flat' ? FLAT : AUTO;
+  const shift = n => table[(n + semis + 120) % 12];
+  if(g.root){
+    const rootPc = NOTE_PC[g.root] + (g.acc==='#'?1:g.acc==='b'?-1:0);
+    let out = shift(rootPc) + (g.quality||'');
+    if(g.bass){
+      const bassPc = NOTE_PC[g.bass] + (g.bassAcc==='#'?1:g.bassAcc==='b'?-1:0);
+      out += '/' + shift(bassPc);
+    }
+    return out;
+  }
+  if(g.bassOnlyRoot){
+    const bassPc = NOTE_PC[g.bassOnlyRoot] + (g.bassOnlyAcc==='#'?1:g.bassOnlyAcc==='b'?-1:0);
+    return '/' + shift(bassPc);
+  }
+  return t;
+}
+
+/* ==================== 상태 ==================== */
+let img = null, imgW = 0, imgH = 0;
+let chords = [];      // {id,x0,y0,x1,y1,text,included}
+let nextId = 1;
+let selectedId = null;
+let semitones = 0;
+let accPref = 'auto';
+let addMode = false;
+let worker = null;
+
+const $ = id => document.getElementById(id);
+const drop=$('drop'), imgWrap=$('imgWrap'), srcImg=$('srcImg'), outCanvas=$('outCanvas');
+const statusEl=$('status'), progWrap=$('progress'), progBar=progWrap.querySelector('i');
+
+/* ==================== 이미지 로드 ==================== */
+function loadFile(file){
+  if(!file || !file.type.startsWith('image/')){ setStatus('이미지 파일이 아닙니다.'); return; }
+  const url = URL.createObjectURL(file);
+  const im = new Image();
+  im.onload = () => {
+    img = im; imgW = im.naturalWidth; imgH = im.naturalHeight;
+    srcImg.src = url;
+    chords = []; selectedId = null;
+    if(lastDebugUrl){ URL.revokeObjectURL(lastDebugUrl); lastDebugUrl = null; }
+    $('debugImg').style.display='none'; $('debugImg').removeAttribute('src');
+    $('debugLink').style.display='none'; $('debugLink').textContent='전처리 이미지 확인 (위치 인식 단계)';
+    drop.style.display='none'; imgWrap.style.display='block';
+    $('btnOcr').disabled=false; $('btnAdd').disabled=false; $('btnSave').disabled=false;
+    setStatus(`이미지 로드 완료 (${imgW}×${imgH}). "코드 인식 실행"을 눌러주세요.`);
+    switchTab('edit'); renderAll();
+  };
+  im.src = url;
+}
+drop.addEventListener('click', () => {
+  const inp=document.createElement('input'); inp.type='file'; inp.accept='image/*';
+  inp.onchange=()=>loadFile(inp.files[0]); inp.click();
+});
+drop.addEventListener('keydown', e=>{ if(e.key==='Enter'||e.key===' ') drop.click(); });
+['dragover','dragenter'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.add('hover');}));
+['dragleave','drop'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.remove('hover');}));
+drop.addEventListener('drop', e=>loadFile(e.dataTransfer.files[0]));
+window.addEventListener('paste', e=>{
+  for(const it of e.clipboardData.items){
+    if(it.type.startsWith('image/')){ loadFile(it.getAsFile()); break; }
+  }
+});
+
+/* ==================== OCR ==================== */
+function setStatus(t){ statusEl.textContent = t; }
+let lastDebugUrl = null;
+
+// 그레이스케일 + Otsu 이진화: 코드 글자와 배경(오선/음표)을 흑백으로 확실히 분리
+function binarize(ctx, w, h){
+  const imgData = ctx.getImageData(0,0,w,h);
+  const d = imgData.data;
+  const hist = new Array(256).fill(0);
+  for(let i=0;i<d.length;i+=4){
+    const g = (0.299*d[i] + 0.587*d[i+1] + 0.114*d[i+2]) | 0;
+    d[i]=d[i+1]=d[i+2]=g;
+    hist[g]++;
+  }
+  const total = w*h;
+  let sum=0; for(let t=0;t<256;t++) sum += t*hist[t];
+  let sumB=0, wB=0, maxVar=-1, threshold=128;
+  for(let t=0;t<256;t++){
+    wB += hist[t]; if(wB===0) continue;
+    const wF = total-wB; if(wF===0) break;
+    sumB += t*hist[t];
+    const mB = sumB/wB, mF = (sum-sumB)/wF;
+    const v = wB*wF*(mB-mF)*(mB-mF);
+    if(v > maxVar){ maxVar=v; threshold=t; }
+  }
+  for(let i=0;i<d.length;i+=4){
+    const v = d[i] > threshold ? 255 : 0;
+    d[i]=d[i+1]=d[i+2]=v;
+  }
+  ctx.putImageData(imgData,0,0);
+}
+
+/* ==================== 커스텀 코드 인식 모델 (ONNX) ====================
+   Tesseract는 "글자가 어디 있는지"(위치 검출)만 담당하고,
+   "그 글자가 무엇인지"(판독)는 합성 데이터로 학습한 CRNN 모델이 담당한다.
+   data.py의 CHARS와 순서가 정확히 같아야 함 (인덱스 = 클래스 id). */
+const MODEL_CHARS = "ABCDEFGMabdgijmnrsu0123456789#()+-/".split('');
+const MODEL_IMG_W = 100, MODEL_IMG_H = 32;
+const ONNX_MODEL_URL = './chord_crnn.onnx';
+let ortSession = null;
+
+async function loadOrtModel(){
+  if(ortSession) return ortSession;
+  if(!window.ort){ throw new Error('onnxruntime-web 라이브러리를 불러오지 못했습니다 (인터넷 연결 확인)'); }
+  ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.27.0/dist/';
+  try{
+    ortSession = await ort.InferenceSession.create(ONNX_MODEL_URL, { executionProviders: ['wasm'] });
+  }catch(err){
+    throw new Error('코드 인식 모델(chord_crnn.onnx)을 불러오지 못했습니다. 이 HTML 파일과 같은 폴더에 '
+      + 'chord_crnn.onnx가 있는지 확인하고, 더블클릭 대신 로컬 서버(예: python3 -m http.server 후 '
+      + 'localhost로 접속)나 GitHub Pages로 열어보세요. (' + err.message + ')');
+  }
+  return ortSession;
+}
+
+// 이미지에서 박스 하나를 모델 입력 형식(32x100 그레이스케일 [0,1])으로 크롭+리사이즈.
+// 학습 시(data.py render_chord_image)와 동일하게: 약간의 여백 + 종횡비 무시 리사이즈.
+function cropForModel(srcImage, x0, y0, x1, y1){
+  const w = x1 - x0, h = y1 - y0;
+  const pad = Math.max(2, h * 0.25);
+  const sx = Math.max(0, x0 - pad), sy = Math.max(0, y0 - pad);
+  const sw = Math.min(imgW - sx, w + pad * 2);
+  const sh = Math.min(imgH - sy, h + pad * 2);
+
+  const tmp = document.createElement('canvas');
+  tmp.width = MODEL_IMG_W; tmp.height = MODEL_IMG_H;
+  const tctx = tmp.getContext('2d');
+  tctx.imageSmoothingEnabled = true;
+  tctx.imageSmoothingQuality = 'high';
+  tctx.drawImage(srcImage, sx, sy, sw, sh, 0, 0, MODEL_IMG_W, MODEL_IMG_H);
+
+  const { data } = tctx.getImageData(0, 0, MODEL_IMG_W, MODEL_IMG_H);
+  const out = new Float32Array(MODEL_IMG_W * MODEL_IMG_H);
+  for(let i = 0, p = 0; i < data.length; i += 4, p++){
+    out[p] = (0.299*data[i] + 0.587*data[i+1] + 0.114*data[i+2]) / 255; // 학습 데이터와 동일한 휘도 변환
+  }
+  return out;
+}
+
+function ctcGreedyDecodeBatch(flatData, dims){
+  const [T, N, C] = dims;
+  const results = [];
+  for(let n = 0; n < N; n++){
+    let prev = -1, chars = [];
+    for(let t = 0; t < T; t++){
+      const base = t*N*C + n*C;
+      let best = 0, bestVal = -Infinity;
+      for(let c = 0; c < C; c++){
+        const v = flatData[base+c];
+        if(v > bestVal){ bestVal = v; best = c; }
+      }
+      if(best !== prev && best !== 0) chars.push(MODEL_CHARS[best-1]); // 0 = CTC blank
+      prev = best;
+    }
+    results.push(chars.join(''));
+  }
+  return results;
+}
+
+async function recognizeBoxesWithModel(srcImage, boxes){
+  if(boxes.length === 0) return [];
+  const session = await loadOrtModel();
+  const N = boxes.length;
+  const batch = new Float32Array(N * MODEL_IMG_H * MODEL_IMG_W);
+  boxes.forEach((b, i) => {
+    batch.set(cropForModel(srcImage, b.x0, b.y0, b.x1, b.y1), i * MODEL_IMG_H * MODEL_IMG_W);
+  });
+  const tensor = new ort.Tensor('float32', batch, [N, 1, MODEL_IMG_H, MODEL_IMG_W]);
+  const outputs = await session.run({ image: tensor });
+  const out = outputs.log_probs;
+  return ctcGreedyDecodeBatch(out.data, out.dims);
+}
+
+async function runOcr(){
+  if(!img) return;
+  $('btnOcr').disabled = true;
+  progWrap.style.display='block'; progBar.style.width='0%';
+  try{
+    if(!worker){
+      setStatus('위치 인식 엔진 로딩 중… (최초 1회, 인터넷 필요)');
+      worker = await Tesseract.createWorker('eng', 1, {
+        logger: m => {
+          if(m.status==='recognizing text') progBar.style.width = Math.round(m.progress*40)+'%';
+        }
+      });
+      await worker.setParameters({ tessedit_pageseg_mode: '11' }); // sparse text: 흩어진 코드 위치 찾기에 유리
+    }
+    setStatus('이미지 전처리 중…');
+    // 원본 해상도가 낮을수록 더 크게 확대 (위치 검출 정확도를 위함)
+    let scale = imgW < 900 ? 4 : imgW < 1800 ? 2.5 : 1.6;
+    const longSide = Math.max(imgW, imgH) * scale;
+    if(longSide > 3500) scale *= 3500 / longSide; // 지나치게 큰 캔버스 방지 (속도/메모리)
+    const cv = document.createElement('canvas');
+    cv.width = Math.round(imgW*scale); cv.height = Math.round(imgH*scale);
+    const cx = cv.getContext('2d');
+    cx.imageSmoothingEnabled = true;
+    cx.imageSmoothingQuality = 'high';
+    cx.drawImage(img, 0, 0, cv.width, cv.height);
+    binarize(cx, cv.width, cv.height);
+    if(lastDebugUrl) URL.revokeObjectURL(lastDebugUrl);
+    lastDebugUrl = await new Promise(res => cv.toBlob(b => res(URL.createObjectURL(b)), 'image/png'));
+    $('debugLink').style.display = 'inline';
+
+    setStatus('글자 위치 찾는 중…');
+    const { data } = await worker.recognize(cv);
+    const rawWords = data.words || [];
+    // Tesseract는 "위치"만 신뢰하고 글자 판독은 하지 않음 — 너무 작은 박스만 걸러냄
+    const boxes = [];
+    for(const w of rawWords){
+      const b = w.bbox;
+      const bw = (b.x1 - b.x0) / scale, bh = (b.y1 - b.y0) / scale;
+      if(bw < 5 || bh < 5) continue;
+      boxes.push({ x0: b.x0/scale, y0: b.y0/scale, x1: b.x1/scale, y1: b.y1/scale });
+    }
+    progBar.style.width = '45%';
+
+    setStatus(`코드 판독 중… (커스텀 모델, 후보 ${boxes.length}개)`);
+    await loadOrtModel();
+    progBar.style.width = '55%';
+    const texts = await recognizeBoxesWithModel(img, boxes);
+    progBar.style.width = '95%';
+
+    let found = 0;
+    boxes.forEach((box, i) => {
+      const text = texts[i];
+      if(!isChordLike(text)) return; // 모델 출력이 코드 문법과 안 맞으면 (가사 등으로 판단) 버림
+      chords.push({ id: nextId++, x0: box.x0, y0: box.y0, x1: box.x1, y1: box.y1, text: norm(text), included: true });
+      found++;
+    });
+    progBar.style.width = '100%';
+    setStatus(found ? `코드 ${found}개 인식 완료. 박스를 확인하고 잘못된 것은 수정/제외하세요.`
+                    : '코드를 찾지 못했습니다. 아래 "전처리 이미지 확인"으로 위치가 잡히는지 확인해보거나, "+ 직접 추가"로 수동 지정하세요.');
+  }catch(err){
+    console.error(err);
+    setStatus('인식 실패: ' + err.message);
+  }finally{
+    progWrap.style.display='none';
+    $('btnOcr').disabled = false;
+    renderAll();
+  }
+}
+$('btnOcr').addEventListener('click', runOcr);
+$('debugLink').addEventListener('click', e=>{
+  e.preventDefault();
+  const di = $('debugImg');
+  const showing = di.style.display !== 'none';
+  if(showing){
+    di.style.display = 'none';
+    $('debugLink').textContent = '전처리 이미지 확인 (위치 인식 단계)';
+  }else{
+    di.src = lastDebugUrl;
+    di.style.display = 'block';
+    $('debugLink').textContent = '전처리 이미지 숨기기';
+  }
+});
+
+/* ==================== 직접 추가 (드래그) ==================== */
+let dragStart = null;
+$('btnAdd').addEventListener('click', ()=>{
+  addMode = !addMode;
+  imgWrap.classList.toggle('adding', addMode);
+  $('btnAdd').textContent = addMode ? '드래그로 영역 지정…' : '+ 직접 추가';
+  if(addMode){ switchTab('edit'); setStatus('이미지에서 코드 위치를 드래그하세요.'); }
+});
+function evtToImgXY(e){
+  const r = srcImg.getBoundingClientRect();
+  const sc = imgW / r.width;
+  return { x:(e.clientX-r.left)*sc, y:(e.clientY-r.top)*sc };
+}
+imgWrap.addEventListener('pointerdown', e=>{
+  if(!addMode) return;
+  e.preventDefault();
+  dragStart = evtToImgXY(e);
+  imgWrap.setPointerCapture(e.pointerId);
+});
+imgWrap.addEventListener('pointermove', e=>{
+  if(!addMode || !dragStart) return;
+  const p = evtToImgXY(e), sc = srcImg.getBoundingClientRect().width / imgW;
+  const t = $('tempBox');
+  t.style.display='block';
+  t.style.left  = Math.min(dragStart.x,p.x)*sc+'px';
+  t.style.top   = Math.min(dragStart.y,p.y)*sc+'px';
+  t.style.width = Math.abs(p.x-dragStart.x)*sc+'px';
+  t.style.height= Math.abs(p.y-dragStart.y)*sc+'px';
+});
+imgWrap.addEventListener('pointerup', e=>{
+  if(!addMode || !dragStart) return;
+  const p = evtToImgXY(e);
+  const x0=Math.min(dragStart.x,p.x), x1=Math.max(dragStart.x,p.x);
+  const y0=Math.min(dragStart.y,p.y), y1=Math.max(dragStart.y,p.y);
+  dragStart=null; $('tempBox').style.display='none';
+  addMode=false; imgWrap.classList.remove('adding'); $('btnAdd').textContent='+ 직접 추가';
+  if(x1-x0 < 8 || y1-y0 < 8){ setStatus('영역이 너무 작습니다.'); return; }
+  const c = { id:nextId++, x0,y0,x1,y1, text:'', included:true };
+  chords.push(c); selectedId = c.id;
+  renderAll();
+  setStatus('목록에서 코드명을 입력하세요.');
+  const inp = document.querySelector(`.citem[data-id="${c.id}"] input[type=text]`);
+  if(inp) inp.focus();
+});
+
+/* ==================== 이조 UI ==================== */
+function setSemi(v){
+  semitones = Math.max(-11, Math.min(11, v));
+  $('semiVal').textContent = (semitones>0?'+':'') + semitones;
+  renderAll();
+}
+$('btnPlus').addEventListener('click', ()=>setSemi(semitones+1));
+$('btnMinus').addEventListener('click', ()=>setSemi(semitones-1));
+
+KEYS.forEach(k=>{
+  $('fromKey').insertAdjacentHTML('beforeend', `<option>${k}</option>`);
+  $('toKey').insertAdjacentHTML('beforeend', `<option>${k}</option>`);
+});
+function keyDiff(){
+  const f = KEYS.indexOf($('fromKey').value), t = KEYS.indexOf($('toKey').value);
+  let d = (t - f + 12) % 12;
+  if(d > 6) d -= 12; // 가까운 방향으로
+  setSemi(d);
+}
+$('fromKey').addEventListener('change', keyDiff);
+$('toKey').addEventListener('change', keyDiff);
+
+document.querySelectorAll('.seg button').forEach(b=>{
+  b.addEventListener('click', ()=>{
+    document.querySelectorAll('.seg button').forEach(x=>x.classList.remove('on'));
+    b.classList.add('on');
+    accPref = b.dataset.pref;
+    renderAll();
+  });
+});
+
+/* ==================== 탭 ==================== */
+let tab = 'edit';
+function switchTab(t){
+  tab = t;
+  $('tabEdit').classList.toggle('active', t==='edit');
+  $('tabResult').classList.toggle('active', t==='result');
+  imgWrap.style.display = (t==='edit' && img) ? 'block' : 'none';
+  outCanvas.style.display = (t==='result' && img) ? 'block' : 'none';
+  drop.style.display = img ? 'none' : 'flex';
+  if(t==='result') renderResult();
+}
+$('tabEdit').addEventListener('click', ()=>switchTab('edit'));
+$('tabResult').addEventListener('click', ()=>switchTab('result'));
+
+/* ==================== 렌더링: 검수 오버레이 ==================== */
+function renderOverlay(){
+  imgWrap.querySelectorAll('.cbox').forEach(el=>el.remove());
+  if(!img) return;
+  const sc = srcImg.getBoundingClientRect().width / imgW;
+  for(const c of chords){
+    const d = document.createElement('div');
+    d.className = 'cbox' + (c.included?'':' off') + (c.id===selectedId?' sel':'');
+    d.style.left = (c.x0*sc-2)+'px';
+    d.style.top = (c.y0*sc-2)+'px';
+    d.style.width = ((c.x1-c.x0)*sc+4)+'px';
+    d.style.height = ((c.y1-c.y0)*sc+4)+'px';
+    const to = c.text ? transposeChord(c.text, semitones, accPref) : '?';
+    d.innerHTML = `<span class="tag">${c.text||'?'} → ${to}</span>`;
+    d.title = '클릭: 포함/제외 전환';
+    d.addEventListener('click', e=>{
+      e.stopPropagation();
+      c.included = !c.included; selectedId = c.id;
+      renderAll();
+    });
+    imgWrap.appendChild(d);
+  }
+}
+window.addEventListener('resize', renderOverlay);
+
+/* ==================== 렌더링: 코드 목록 ==================== */
+function renderList(){
+  const list = $('chordList');
+  const inc = chords.filter(c=>c.included).length;
+  $('cnt').textContent = chords.length ? `(${inc}/${chords.length} 포함)` : '';
+  if(!chords.length){ list.innerHTML = '<div class="empty">아직 인식된 코드가 없습니다.</div>'; return; }
+  list.innerHTML = '';
+  const sorted = [...chords].sort((a,b)=> (a.y0-b.y0)||(a.x0-b.x0));
+  for(const c of sorted){
+    const row = document.createElement('div');
+    row.className = 'citem' + (c.id===selectedId?' sel':'');
+    row.dataset.id = c.id;
+    const to = c.text ? transposeChord(c.text, semitones, accPref) : '';
+    row.innerHTML = `
+      <input type="checkbox" ${c.included?'checked':''} aria-label="포함 여부">
+      <input type="text" value="${c.text.replace(/"/g,'&quot;')}" placeholder="코드" aria-label="코드명">
+      <span class="arrow">→</span><span class="result">${to}</span>
+      <button class="del" title="삭제" aria-label="삭제">✕</button>`;
+    row.querySelector('[type=checkbox]').addEventListener('change', e=>{ c.included=e.target.checked; renderAll(); });
+    row.querySelector('[type=text]').addEventListener('input', e=>{
+      c.text = e.target.value;
+      row.querySelector('.result').textContent = c.text ? transposeChord(c.text, semitones, accPref) : '';
+      renderOverlay();
+      if(tab==='result') renderResult();
+    });
+    row.querySelector('[type=text]').addEventListener('focus', ()=>{ selectedId=c.id; renderOverlay(); });
+    row.querySelector('.del').addEventListener('click', ()=>{
+      chords = chords.filter(x=>x.id!==c.id);
+      if(selectedId===c.id) selectedId=null;
+      renderAll();
+    });
+    list.appendChild(row);
+  }
+}
+$('btnAll').addEventListener('click', ()=>{ chords.forEach(c=>c.included=true); renderAll(); });
+$('btnNone').addEventListener('click', ()=>{ chords.forEach(c=>c.included=false); renderAll(); });
+
+/* ==================== 렌더링: 결과 이미지 ==================== */
+function avgBorderColor(ctx, x0, y0, x1, y1){
+  // 박스 바깥 테두리(4px 링)의 평균색 → 배경색 추정
+  const pad = 5;
+  const sx = Math.max(0, Math.round(x0-pad)), sy = Math.max(0, Math.round(y0-pad));
+  const ex = Math.min(imgW-1, Math.round(x1+pad)), ey = Math.min(imgH-1, Math.round(y1+pad));
+  const w = ex-sx, h = ey-sy;
+  if(w<2 || h<2) return '#ffffff';
+  const d = ctx.getImageData(sx, sy, w, h).data;
+  let r=0,g=0,b=0,n=0;
+  const inX0=x0-sx, inY0=y0-sy, inX1=x1-sx, inY1=y1-sy;
+  for(let y=0;y<h;y++) for(let x=0;x<w;x++){
+    if(x>=inX0 && x<=inX1 && y>=inY0 && y<=inY1) continue; // 내부 제외
+    const i=(y*w+x)*4;
+    r+=d[i]; g+=d[i+1]; b+=d[i+2]; n++;
+  }
+  if(!n) return '#ffffff';
+  return `rgb(${Math.round(r/n)},${Math.round(g/n)},${Math.round(b/n)})`;
+}
+function renderResult(){
+  if(!img) return;
+  outCanvas.width = imgW; outCanvas.height = imgH;
+  const ctx = outCanvas.getContext('2d');
+  ctx.drawImage(img, 0, 0);
+  for(const c of chords){
+    if(!c.included || !c.text) continue;
+    const to = transposeChord(c.text, semitones, accPref);
+    const h = c.y1 - c.y0;
+    const fontSize = Math.min(h/0.72, h*1.5);
+    ctx.font = `bold ${fontSize}px "Helvetica Neue", Arial, sans-serif`;
+    const newW = ctx.measureText(to).width;
+    const clearW = Math.max(c.x1-c.x0, newW);
+    // 배경색으로 원래 코드 지우기
+    ctx.fillStyle = avgBorderColor(ctx, c.x0, c.y0, c.x1, c.y1);
+    ctx.fillRect(c.x0-2, c.y0-2, clearW+5, h+5);
+    // 새 코드 그리기
+    ctx.fillStyle = '#1a1a1a';
+    ctx.textBaseline = 'alphabetic';
+    ctx.fillText(to, c.x0, c.y1);
+  }
+}
+$('btnSave').addEventListener('click', ()=>{
+  renderResult();
+  const name = `transposed_${semitones>0?'+':''}${semitones}.png`;
+  outCanvas.toBlob(blob=>{
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = name;
+    a.click();
+    setTimeout(()=>URL.revokeObjectURL(a.href), 3000);
+  }, 'image/png');
+});
+
+function renderAll(){
+  renderOverlay();
+  renderList();
+  if(tab==='result') renderResult();
+}
+</script>
+</body>
+</html>
