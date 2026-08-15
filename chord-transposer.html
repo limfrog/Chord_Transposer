@@ -302,6 +302,144 @@ function binarize(ctx, w, h){
   ctx.putImageData(imgData,0,0);
 }
 
+/* ==================== 오선 위치 검출 ====================
+   코드는 관례적으로 오선 바로 위에 위치한다는 규칙을 이용해, 가사(오선 아래)를
+   구조적으로 걸러낸다. 이진화된 이미지에서 "가로로 길게 검은 행"을 오선 후보로 찾고,
+   간격이 균등한 5개가 모이면 하나의 오선(5선)으로 인정한다.
+   튜닝 상수는 주석 참고 — 실제 악보로 테스트하며 조정 가능. */
+const STAFF_ROW_BLACK_FRAC = 0.35; // 이 비율 이상 검게 채워진 행을 오선 후보로 봄
+const STAFF_BAND_ABOVE_GAPS = 7;   // 오선 맨 윗줄 기준, 위로 몇 배(줄 간격) 까지를 "코드 영역"으로 볼지
+const STAFF_BAND_MARGIN_GAPS = 0.15; // 오선 바로 위 여백 (오선 자체와 겹치지 않도록)
+
+function detectStaffSystems(ctx, w, h){
+  const { data } = ctx.getImageData(0, 0, w, h);
+  const blackFrac = new Float32Array(h);
+  for(let y = 0; y < h; y++){
+    let cnt = 0;
+    const rowBase = y * w * 4;
+    for(let x = 0; x < w; x++){
+      if(data[rowBase + x*4] === 0) cnt++; // 이진화 후 0 = 검정(잉크)
+    }
+    blackFrac[y] = cnt / w;
+  }
+  // 인접한 후보 행을 하나의 선으로 병합 (두꺼운 선/안티앨리어싱 대응)
+  const merged = [];
+  let cur = null;
+  for(let y = 0; y < h; y++){
+    if(blackFrac[y] > STAFF_ROW_BLACK_FRAC){
+      if(cur && y - cur.end <= 2) cur.end = y;
+      else { if(cur) merged.push(cur); cur = { start: y, end: y }; }
+    }
+  }
+  if(cur) merged.push(cur);
+  const centers = merged.map(l => (l.start + l.end) / 2);
+
+  // 간격이 균등한 5개 연속 선 = 오선 하나
+  const systems = [];
+  for(let i = 0; i + 4 < centers.length; i++){
+    const g = centers.slice(i, i+5);
+    const gaps = [1,2,3,4].map(j => g[j] - g[j-1]);
+    const avgGap = gaps.reduce((a,b)=>a+b, 0) / 4;
+    const maxDev = Math.max(...gaps.map(x => Math.abs(x - avgGap)));
+    if(avgGap > 2 && maxDev < avgGap * 0.35){
+      systems.push({ yTop: g[0], yBottom: g[4], gap: avgGap });
+      i += 4; // 이 5개는 소비 완료, 다음은 그 뒤부터 탐색
+    }
+  }
+  return systems;
+}
+
+// 박스가 어느 오선의 "바로 위" 영역에 들어가는지 확인 (좌표 단위는 systems와 같아야 함)
+function isInChordBand(systems, y0, y1){
+  const boxBottom = y1;
+  for(const sys of systems){
+    const bandBottom = sys.yTop - sys.gap * STAFF_BAND_MARGIN_GAPS;
+    const bandTop = sys.yTop - sys.gap * STAFF_BAND_ABOVE_GAPS;
+    if(boxBottom >= bandTop && boxBottom <= bandBottom) return true;
+  }
+  return false;
+}
+
+/* ==================== 기울기(회전) 보정 ====================
+   오선 검출은 가로줄 투영 방식이라 아주 작은 회전(0.5도 정도)에도 완전히 깨진다.
+   촬영/스캔본은 거의 항상 약간 기울어져 있으므로, 본 인식 전에 최적 보정각을
+   먼저 찾는다. (Node 테스트로 -4.5~+4.5도 범위에서 검증됨) */
+function newCanvas(w, h){
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  return c;
+}
+
+// 이진화된 이미지에서 "얼마나 뚜렷한 가로줄들이 있는가"를 연속적인 점수로 반환
+function rowProjectionScore(ctx, w, h){
+  const { data } = ctx.getImageData(0, 0, w, h);
+  const blackFrac = new Float32Array(h);
+  for(let y = 0; y < h; y++){
+    let cnt = 0;
+    const base = y * w * 4;
+    for(let x = 0; x < w; x++){
+      if(data[base + x*4] === 0) cnt++;
+    }
+    blackFrac[y] = cnt / w;
+  }
+  const sorted = Array.from(blackFrac).sort((a,b) => b - a);
+  let score = 0;
+  const K = Math.min(24, sorted.length);
+  for(let i = 0; i < K; i++) score += sorted[i];
+  return score;
+}
+
+function scoreAngle(grayCanvas, w, h, angle){
+  const rc = newCanvas(w, h);
+  const rctx = rc.getContext('2d');
+  rctx.fillStyle = '#fff'; rctx.fillRect(0, 0, w, h);
+  rctx.save();
+  rctx.translate(w/2, h/2);
+  rctx.rotate(angle * Math.PI/180);
+  rctx.translate(-w/2, -h/2);
+  rctx.drawImage(grayCanvas, 0, 0);
+  rctx.restore();
+  binarize(rctx, w, h);
+  return rowProjectionScore(rctx, w, h);
+}
+
+// 코스-투-파인 탐색으로 최적 보정 각도를 찾는다 (작은 프록시 캔버스에서, 빠르게)
+function estimateDeskewAngle(srcImage, srcW, srcH){
+  const proxyW = Math.min(1000, srcW);
+  const proxyH = Math.round(srcH * proxyW / srcW);
+  const grayCanvas = newCanvas(proxyW, proxyH);
+  const gctx = grayCanvas.getContext('2d');
+  gctx.fillStyle = '#fff'; gctx.fillRect(0,0,proxyW,proxyH);
+  gctx.drawImage(srcImage, 0, 0, proxyW, proxyH);
+
+  let bestCoarse = { angle: 0, score: -Infinity };
+  for(let a = -6; a <= 6; a += 1){
+    const s = scoreAngle(grayCanvas, proxyW, proxyH, a);
+    if(s > bestCoarse.score) bestCoarse = { angle: a, score: s };
+  }
+  let bestFine = bestCoarse;
+  for(let a = bestCoarse.angle - 1; a <= bestCoarse.angle + 1; a += 0.2){
+    const rounded = Math.round(a * 10) / 10;
+    const s = scoreAngle(grayCanvas, proxyW, proxyH, rounded);
+    if(s > bestFine.score) bestFine = { angle: rounded, score: s };
+  }
+  return bestFine.angle;
+}
+
+function rotatePoint(x, y, cx, cy, angleDeg){
+  const rad = angleDeg * Math.PI/180;
+  const cos = Math.cos(rad), sin = Math.sin(rad);
+  const dx = x - cx, dy = y - cy;
+  return { x: cx + dx*cos - dy*sin, y: cy + dx*sin + dy*cos };
+}
+
+// 보정된(회전된) 좌표계의 박스를 원본 이미지 좌표계로 되돌림 (4꼭짓점 역회전 후 바운딩박스)
+function boxFromRotatedToOriginal(x0, y0, x1, y1, cx, cy, angleDeg){
+  const corners = [[x0,y0],[x1,y0],[x0,y1],[x1,y1]].map(([x,y]) => rotatePoint(x,y,cx,cy,-angleDeg));
+  const xs = corners.map(p=>p.x), ys = corners.map(p=>p.y);
+  return { x0: Math.min(...xs), y0: Math.min(...ys), x1: Math.max(...xs), y1: Math.max(...ys) };
+}
+
 /* ==================== 커스텀 코드 인식 모델 (ONNX) ====================
    Tesseract는 "글자가 어디 있는지"(위치 검출)만 담당하고,
    "그 글자가 무엇인지"(판독)는 합성 데이터로 학습한 CRNN 모델이 담당한다.
@@ -327,12 +465,12 @@ async function loadOrtModel(){
 
 // 이미지에서 박스 하나를 모델 입력 형식(32x100 그레이스케일 [0,1])으로 크롭+리사이즈.
 // 학습 시(data.py render_chord_image)와 동일하게: 약간의 여백 + 종횡비 무시 리사이즈.
-function cropForModel(srcImage, x0, y0, x1, y1){
+function cropForModel(srcImage, srcW, srcH, x0, y0, x1, y1){
   const w = x1 - x0, h = y1 - y0;
   const pad = Math.max(2, h * 0.25);
   const sx = Math.max(0, x0 - pad), sy = Math.max(0, y0 - pad);
-  const sw = Math.min(imgW - sx, w + pad * 2);
-  const sh = Math.min(imgH - sy, h + pad * 2);
+  const sw = Math.min(srcW - sx, w + pad * 2);
+  const sh = Math.min(srcH - sy, h + pad * 2);
 
   const tmp = document.createElement('canvas');
   tmp.width = MODEL_IMG_W; tmp.height = MODEL_IMG_H;
@@ -369,13 +507,13 @@ function ctcGreedyDecodeBatch(flatData, dims){
   return results;
 }
 
-async function recognizeBoxesWithModel(srcImage, boxes){
+async function recognizeBoxesWithModel(srcImage, srcW, srcH, boxes){
   if(boxes.length === 0) return [];
   const session = await loadOrtModel();
   const N = boxes.length;
   const batch = new Float32Array(N * MODEL_IMG_H * MODEL_IMG_W);
   boxes.forEach((b, i) => {
-    batch.set(cropForModel(srcImage, b.x0, b.y0, b.x1, b.y1), i * MODEL_IMG_H * MODEL_IMG_W);
+    batch.set(cropForModel(srcImage, srcW, srcH, b.x0, b.y0, b.x1, b.y1), i * MODEL_IMG_H * MODEL_IMG_W);
   });
   const tensor = new ort.Tensor('float32', batch, [N, 1, MODEL_IMG_H, MODEL_IMG_W]);
   const outputs = await session.run({ image: tensor });
@@ -397,6 +535,10 @@ async function runOcr(){
       });
       await worker.setParameters({ tessedit_pageseg_mode: '11' }); // sparse text: 흩어진 코드 위치 찾기에 유리
     }
+    setStatus('기울기 보정 각도 추정 중…');
+    const deskewAngle = estimateDeskewAngle(img, imgW, imgH);
+    progBar.style.width = '10%';
+
     setStatus('이미지 전처리 중…');
     // 원본 해상도가 낮을수록 더 크게 확대 (위치 검출 정확도를 위함)
     let scale = imgW < 900 ? 4 : imgW < 1800 ? 2.5 : 1.6;
@@ -407,39 +549,82 @@ async function runOcr(){
     const cx = cv.getContext('2d');
     cx.imageSmoothingEnabled = true;
     cx.imageSmoothingQuality = 'high';
+    cx.fillStyle = '#fff'; cx.fillRect(0, 0, cv.width, cv.height);
+    cx.save();
+    cx.translate(cv.width/2, cv.height/2);
+    cx.rotate(deskewAngle * Math.PI/180);
+    cx.translate(-cv.width/2, -cv.height/2);
     cx.drawImage(img, 0, 0, cv.width, cv.height);
+    cx.restore();
+
+    // 모델 크롭용 그레이스케일(이진화 전) 사본을 미리 떠둠 — 이진화는 위치 검출에만 씀
+    const cvGray = document.createElement('canvas');
+    cvGray.width = cv.width; cvGray.height = cv.height;
+    cvGray.getContext('2d').drawImage(cv, 0, 0);
+
     binarize(cx, cv.width, cv.height);
+
+    const staffSystems = detectStaffSystems(cx, cv.width, cv.height);
+    if(staffSystems.length){
+      // 검출된 "코드 영역" 시각화 (전처리 이미지 확인에서 파란 띠로 보임)
+      cx.save();
+      cx.fillStyle = 'rgba(0,140,255,0.16)';
+      cx.strokeStyle = 'rgba(0,110,255,0.85)';
+      cx.lineWidth = Math.max(1, cv.height/900);
+      for(const sys of staffSystems){
+        const bandBottom = sys.yTop - sys.gap * STAFF_BAND_MARGIN_GAPS;
+        const bandTop = Math.max(0, sys.yTop - sys.gap * STAFF_BAND_ABOVE_GAPS);
+        cx.fillRect(0, bandTop, cv.width, bandBottom - bandTop);
+        cx.beginPath();
+        cx.moveTo(0, sys.yTop); cx.lineTo(cv.width, sys.yTop);
+        cx.stroke();
+      }
+      cx.restore();
+    }
+
     if(lastDebugUrl) URL.revokeObjectURL(lastDebugUrl);
     lastDebugUrl = await new Promise(res => cv.toBlob(b => res(URL.createObjectURL(b)), 'image/png'));
     $('debugLink').style.display = 'inline';
 
-    setStatus('글자 위치 찾는 중…');
+    const deskewMsg = deskewAngle !== 0 ? `기울기 ${deskewAngle}도 보정, ` : '';
+    setStatus(staffSystems.length ? `${deskewMsg}오선 ${staffSystems.length}개 검출. 글자 위치 찾는 중…`
+                                   : `${deskewMsg}오선을 못 찾음 (위치 필터 없이 진행). 글자 위치 찾는 중…`);
     const { data } = await worker.recognize(cv);
     const rawWords = data.words || [];
     // Tesseract는 "위치"만 신뢰하고 글자 판독은 하지 않지만, confidence는 여전히 쓸모 있다:
     // 학습에 없는 형태(한글 등)는 영어 문자 모양과 안 맞아서 대체로 낮은 confidence로 나온다.
     // → 이 값을 "라틴 문자스러움" 필터로 재활용해 가사 등 오탐을 줄인다.
+    // + 오선이 검출된 경우, "오선 바로 위" 영역이 아니면 후보에서 제외 (가사는 오선 아래이므로 구조적으로 걸러짐)
+    // 좌표는 회전+업스케일된 cv 좌표계 그대로 보관 (cvGray에서 크롭할 때 그대로 씀)
     const boxes = [];
     for(const w of rawWords){
       const b = w.bbox;
       const bw = (b.x1 - b.x0) / scale, bh = (b.y1 - b.y0) / scale;
       if(bw < 8 || bh < 8) continue;
       if(w.confidence < confThreshold) continue;
-      boxes.push({ x0: b.x0/scale, y0: b.y0/scale, x1: b.x1/scale, y1: b.y1/scale });
+      if(staffSystems.length && !isInChordBand(staffSystems, b.y0, b.y1)) continue;
+      boxes.push({ x0: b.x0, y0: b.y0, x1: b.x1, y1: b.y1 });
     }
     progBar.style.width = '45%';
 
     setStatus(`코드 판독 중… (커스텀 모델, 후보 ${boxes.length}개)`);
     await loadOrtModel();
     progBar.style.width = '55%';
-    const texts = await recognizeBoxesWithModel(img, boxes);
+    const texts = await recognizeBoxesWithModel(cvGray, cv.width, cv.height, boxes);
     progBar.style.width = '95%';
 
     let found = 0;
+    const rotCx = cv.width/2, rotCy = cv.height/2;
     boxes.forEach((box, i) => {
       const text = texts[i];
       if(!isChordLike(text)) return; // 모델 출력이 코드 문법과 안 맞으면 (가사 등으로 판단) 버림
-      chords.push({ id: nextId++, x0: box.x0, y0: box.y0, x1: box.x1, y1: box.y1, text: norm(text), included: true });
+      // 회전 보정된 좌표계 → 원본 이미지 좌표계로 역회전 + 축소
+      const orig = boxFromRotatedToOriginal(box.x0, box.y0, box.x1, box.y1, rotCx, rotCy, deskewAngle);
+      chords.push({
+        id: nextId++,
+        x0: orig.x0/scale, y0: orig.y0/scale, x1: orig.x1/scale, y1: orig.y1/scale,
+        text: norm(text), included: true
+      });
       found++;
     });
     progBar.style.width = '100%';
