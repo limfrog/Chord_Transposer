@@ -89,6 +89,7 @@
 <header>
   <h1><span class="flat">♭</span> 코드 이조기</h1>
   <span class="sub">악보 이미지의 코드를 인식해 원하는 조성으로 일괄 변환</span>
+  <span class="sub" style="margin-left:auto; font-family:Georgia,serif; color:var(--pencil);">build 2026-08-15c</span>
 </header>
 
 <div class="layout">
@@ -757,7 +758,7 @@ async function runOcr(){
   progWrap.style.display='block'; progBar.style.width='0%';
   try{
     setStatus('기울기 보정 각도 추정 중…');
-    const deskewAngle = estimateDeskewAngle(img, imgW, imgH);
+    const deskewGuess = estimateDeskewAngle(img, imgW, imgH);
     progBar.style.width = '10%';
 
     setStatus('이미지 전처리 중…');
@@ -765,27 +766,40 @@ async function runOcr(){
     let scale = imgW < 900 ? 4 : imgW < 1800 ? 2.5 : 1.6;
     const longSide = Math.max(imgW, imgH) * scale;
     if(longSide > 3500) scale *= 3500 / longSide; // 지나치게 큰 캔버스 방지 (속도/메모리)
-    const cv = document.createElement('canvas');
-    cv.width = Math.round(imgW*scale); cv.height = Math.round(imgH*scale);
-    const cx = cv.getContext('2d');
-    cx.imageSmoothingEnabled = true;
-    cx.imageSmoothingQuality = 'high';
-    cx.fillStyle = '#fff'; cx.fillRect(0, 0, cv.width, cv.height);
-    cx.save();
-    cx.translate(cv.width/2, cv.height/2);
-    cx.rotate(deskewAngle * Math.PI/180);
-    cx.translate(-cv.width/2, -cv.height/2);
-    cx.drawImage(img, 0, 0, cv.width, cv.height);
-    cx.restore();
+    const cvW = Math.round(imgW*scale), cvH = Math.round(imgH*scale);
 
-    // 모델 크롭용 그레이스케일(이진화 전) 사본을 미리 떠둠 — 이진화는 위치 검출에만 씀
-    const cvGray = document.createElement('canvas');
-    cvGray.width = cv.width; cvGray.height = cv.height;
-    cvGray.getContext('2d').drawImage(cv, 0, 0);
+    // 보정각을 적용한 캔버스를 만들고, 이진화 후 오선을 세어 본다.
+    function buildAt(angle){
+      const c = document.createElement('canvas');
+      c.width = cvW; c.height = cvH;
+      const g = c.getContext('2d');
+      g.imageSmoothingEnabled = true;
+      g.imageSmoothingQuality = 'high';
+      g.fillStyle = '#fff'; g.fillRect(0, 0, cvW, cvH);
+      g.save();
+      g.translate(cvW/2, cvH/2);
+      g.rotate(angle * Math.PI/180);
+      g.translate(-cvW/2, -cvH/2);
+      g.drawImage(img, 0, 0, cvW, cvH);
+      g.restore();
+      const grayCopy = document.createElement('canvas');
+      grayCopy.width = cvW; grayCopy.height = cvH;
+      grayCopy.getContext('2d').drawImage(c, 0, 0);
+      binarize(g, cvW, cvH);
+      return { canvas: c, ctx: g, gray: grayCopy, systems: detectStaffSystems(g, cvW, cvH) };
+    }
 
-    binarize(cx, cv.width, cv.height);
+    // 잘못된 보정각은 오선 검출을 통째로 무너뜨리고, 그러면 필터가 약한 폴백 경로로 빠진다.
+    // 그러니 추정각과 0도를 모두 만들어보고 "오선이 더 많이 잡히는 쪽"을 채택한다.
+    let built = buildAt(deskewGuess);
+    let deskewAngle = deskewGuess;
+    if(deskewGuess !== 0){
+      const alt = buildAt(0);
+      if(alt.systems.length > built.systems.length){ built = alt; deskewAngle = 0; }
+    }
+    const cv = built.canvas, cx = built.ctx, cvGray = built.gray;
+    const staffSystems = built.systems;
 
-    const staffSystems = detectStaffSystems(cx, cv.width, cv.height);
     if(staffSystems.length){
       // 검출된 "코드 영역" 시각화 (전처리 이미지 확인에서 파란 띠로 보임)
       cx.save();
@@ -822,7 +836,7 @@ async function runOcr(){
       }
     }else{
       // 오선을 못 찾은 경우: Tesseract 위치 검출 + confidence 필터로 대체 (기존 방식)
-      setStatus(`${deskewMsg}오선을 못 찾음 (위치 필터 없이 진행). 위치 인식 엔진 준비 중…`);
+      setStatus(`${deskewMsg}오선 미검출 — 보조 방식으로 진행. 위치 인식 엔진 준비 중…`);
       if(!worker){
         worker = await Tesseract.createWorker('eng', 1, {
           logger: m => {
@@ -834,14 +848,26 @@ async function runOcr(){
       setStatus(`${deskewMsg}글자 위치 찾는 중…`);
       const { data } = await worker.recognize(cv);
       const rawWords = data.words || [];
-      // Tesseract는 "위치"만 신뢰하고 글자 판독은 하지 않지만, confidence는 여전히 쓸모 있다:
-      // 학습에 없는 형태(한글 등)는 영어 문자 모양과 안 맞아서 대체로 낮은 confidence로 나온다.
+      const raw = [];
       for(const w of rawWords){
         const b = w.bbox;
         const bw = (b.x1 - b.x0) / scale, bh = (b.y1 - b.y0) / scale;
         if(bw < 8 || bh < 8) continue;
         if(w.confidence < confThreshold) continue;
-        boxes.push({ x0: b.x0, y0: b.y0, x1: b.x1, y1: b.y1 });
+        raw.push({ x0: b.x0, y0: b.y0, x1: b.x1, y1: b.y1 });
+      }
+      // 오선을 못 찾았어도 크기·라틴 필터는 그대로 적용한다. (예전에는 이 경로가 무방비여서
+      // 오선 검출이 한 번 실패하면 가사·음표까지 전부 후보로 쏟아졌다.)
+      // 기준 높이는 검출된 박스들의 중앙값 — 본문 글자 크기의 대용치로 쓴다.
+      if(raw.length){
+        const heights = raw.map(b => b.y1 - b.y0).sort((a,b) => a-b);
+        const medianH = heights[Math.floor(heights.length/2)];
+        for(const b of raw){
+          const h = b.y1 - b.y0;
+          if(h < medianH * 0.75 || h > medianH * 2.0) continue;
+          if(!looksLikeLatinText(cx, b.x0, b.y0, b.x1, b.y1)) continue;
+          boxes.push(b);
+        }
       }
     }
     progBar.style.width = '45%';
@@ -869,8 +895,11 @@ async function runOcr(){
       found++;
     });
     progBar.style.width = '100%';
-    setStatus(found ? `코드 ${found}개 인식 완료. 박스를 확인하고 잘못된 것은 수정/제외하세요.`
-                    : '코드를 찾지 못했습니다. 아래 "전처리 이미지 확인"으로 위치가 잡히는지 확인해보거나, "+ 직접 추가"로 수동 지정하세요.');
+    const pathMsg = staffSystems.length
+      ? `오선 ${staffSystems.length}개 기준 정밀 검출`
+      : '오선 미검출 → 보조 방식';
+    setStatus(found ? `코드 ${found}개 인식 완료 (${pathMsg}, 후보 ${boxes.length}개). 박스를 확인하고 잘못된 것은 수정/제외하세요.`
+                    : `코드를 찾지 못했습니다 (${pathMsg}). 아래 "전처리 이미지 확인"으로 위치가 잡히는지 확인해보거나, "+ 직접 추가"로 수동 지정하세요.`);
   }catch(err){
     console.error(err);
     setStatus('인식 실패: ' + err.message);
