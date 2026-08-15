@@ -121,11 +121,11 @@
       </div>
       <div style="margin-top:10px">
         <div class="row" style="justify-content:space-between; margin-bottom:4px;">
-          <span style="font-size:12px; color:var(--muted);">모델 확신도 (음표머리 등 오탐 거르기)</span>
-          <span style="font-size:12px; color:var(--paper); font-weight:600;" id="modelConfVal">50%</span>
+          <span style="font-size:12px; color:var(--muted);">코드 글자 크기 (오선 간격 대비)</span>
+          <span style="font-size:12px; color:var(--paper); font-weight:600;" id="chordSizeVal">1.35 ~ 2.20</span>
         </div>
-        <input type="range" id="modelConfSlider" min="0" max="90" value="50" style="width:100%; accent-color:var(--pencil);">
-        <div class="hint" style="margin-top:2px;">코드 글자가 아닌 것(음표머리 등)을 억지로 읽으면 모델이 확신을 못 갖는 경향을 이용합니다. 놓친 코드가 있으면 낮추고, 엉뚱한 박스가 많으면 올리세요.</div>
+        <input type="range" id="chordSizeSlider" min="80" max="200" value="135" style="width:100%; accent-color:var(--pencil);">
+        <div class="hint" style="margin-top:2px;">코드 글자는 오선 간격에 비례한 크기를 가집니다. 이보다 작은 것(음표 기둥, 가사)은 제외됩니다. 코드를 놓치면 낮추고, 음표·가사가 섞이면 올리세요.</div>
       </div>
       <div style="margin-top:10px">
         <div class="row" style="justify-content:space-between; margin-bottom:4px;">
@@ -234,15 +234,18 @@ let semitones = 0;
 let accPref = 'auto';
 let addMode = false;
 let confThreshold = 35; // Tesseract 위치 검출 신뢰도 하한 — 한글 등 라틴 문자가 아닌 형태를 거르는 용도
-let modelConfThreshold = 0.5; // 커스텀 모델의 판독 확신도 하한 — 음표머리 등 코드가 아닌 입력을 거르는 용도
+// 코드 글자 높이 / 오선 줄 간격 비율의 허용 하한. 실측 기반 기본값 1.35.
+// (상한은 하한 + 0.85로 함께 움직인다)
+let chordHRatioMin = 1.35;
 
 document.getElementById('confSlider').addEventListener('input', e=>{
   confThreshold = Number(e.target.value);
   document.getElementById('confVal').textContent = confThreshold;
 });
-document.getElementById('modelConfSlider').addEventListener('input', e=>{
-  modelConfThreshold = Number(e.target.value) / 100;
-  document.getElementById('modelConfVal').textContent = e.target.value + '%';
+document.getElementById('chordSizeSlider').addEventListener('input', e=>{
+  chordHRatioMin = Number(e.target.value) / 100;
+  document.getElementById('chordSizeVal').textContent =
+    chordHRatioMin.toFixed(2) + ' ~ ' + (chordHRatioMin + 0.85).toFixed(2);
 });
 let worker = null;
 
@@ -503,13 +506,18 @@ function groupComponentsIntoWords(components, gapThreshold, maxGroupWidth){
   let cur = null;
   for(const c of filtered){
     const ch = c.y1 - c.y0;
+    const ccy = (c.y0 + c.y1) / 2;
     if(cur){
       const curH = cur.y1 - cur.y0;
+      const curCy = (cur.y0 + cur.y1) / 2;
       const heightRatio = Math.max(ch, curH) / Math.max(1, Math.min(ch, curH));
       const gapOk = c.x0 - cur.x1 <= gapThreshold;
       const heightOk = heightRatio <= 2.2; // 높이가 2.2배 넘게 차이나면 별개 성분으로 취급
       const widthOk = Math.max(cur.x1, c.x1) - Math.min(cur.x0, c.x0) <= maxGroupWidth; // 너무 멀리 떨어진 것과 연쇄 병합 방지
-      if(gapOk && heightOk && widthOk){
+      // 세로 중심이 비슷한 선에 있어야 같은 글자로 본다. 이게 없으면 바로 옆의
+      // 음표 기둥(중심이 훨씬 아래)이 코드 글자에 들러붙어 박스가 세로로 부푼다.
+      const centerOk = Math.abs(ccy - curCy) <= Math.max(ch, curH) * 0.55;
+      if(gapOk && heightOk && widthOk && centerOk){
         cur.x0 = Math.min(cur.x0, c.x0); cur.y0 = Math.min(cur.y0, c.y0);
         cur.x1 = Math.max(cur.x1, c.x1); cur.y1 = Math.max(cur.y1, c.y1);
         continue;
@@ -542,8 +550,15 @@ function looksLikeLatinText(ctx, x0, y0, x1, y1){
   return fillRatio >= LATIN_FILL_RATIO_MIN;
 }
 
+// 코드 글자 높이는 오선 줄 간격에 비례한다. 실제 악보로 측정한 결과 진짜 코드는
+// 높이/줄간격이 약 1.6~1.95인 반면, 오탐은 확실히 다른 대역에 몰려 있다:
+//   음표 기둥·빔 조각 0.25~0.33 / 한글 가사·지시어 0.55~0.62 / 이음줄·음자리표 1.05~1.25
+// 양쪽에 여유를 둔 창을 쓴다.
+const CHORD_H_RATIO_SPAN = 0.85; // 하한에서 이만큼 위까지 허용
+
 function detectChordCandidates(ctx, cvWidth, staffSystems){
   const boxes = [];
+  const hMin = chordHRatioMin, hMax = chordHRatioMin + CHORD_H_RATIO_SPAN;
   for(let i = 0; i < staffSystems.length; i++){
     const sys = staffSystems[i];
     const { bandTop, bandBottom } = computeChordBand(staffSystems, i, ctx, cvWidth);
@@ -551,8 +566,15 @@ function detectChordCandidates(ctx, cvWidth, staffSystems){
     const gapThreshold = Math.max(4, sys.gap * 1.0);
     const maxGroupWidth = sys.gap * 8; // 코드 하나가 이 이상 넓어지면 보통 다른 것과 잘못 이어붙은 것
     const words = groupComponentsIntoWords(comps, gapThreshold, maxGroupWidth);
-    // 1.위치(오선 위 영역, 이미 위에서 반영됨) -> 2.영어(라틴)스러움 판별 -> 3.이후 모델 인식 단계로
-    for(const w of words){
+    // 1.위치(오선 위 영역) -> 2.글자 크기 -> 3.영어(라틴)스러움 -> 4.이후 모델 인식 단계로
+    const sized = words.filter(w => {
+      const ratio = (w.y1 - w.y0) / sys.gap;
+      return ratio >= hMin && ratio <= hMax;
+    });
+    // 폰트 비율이 예상 밖인 악보에서 전부 걸러지는 사고를 막는 안전장치:
+    // 크기 필터가 이 시스템의 후보를 전멸시켰다면 크기 필터는 포기하고 원래 목록을 쓴다.
+    const pool = sized.length > 0 ? sized : words;
+    for(const w of pool){
       if(looksLikeLatinText(ctx, w.x0, w.y0, w.x1, w.y1)) boxes.push(w);
     }
   }
@@ -835,7 +857,8 @@ async function runOcr(){
     boxes.forEach((box, i) => {
       const text = texts[i];
       if(!isChordLike(text)) return; // 모델 출력이 코드 문법과 안 맞으면 (음표머리 등으로 판단) 버림
-      if(confidences[i] < modelConfThreshold) return; // 모델이 확신 없이 답한 경우도 버림
+      // (모델 확신도는 필터로 쓰지 않는다: 실제 악보로 측정해보니 음표 기둥 조각에도
+      //  0.99를 주는 과확신 성향이라 판별력이 없었다. 대신 크기·위치 필터로 걸러낸다.)
       // 회전 보정된 좌표계 → 원본 이미지 좌표계로 역회전 + 축소
       const orig = boxFromRotatedToOriginal(box.x0, box.y0, box.x1, box.y1, rotCx, rotCy, deskewAngle);
       chords.push({
