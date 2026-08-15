@@ -89,7 +89,7 @@
 <header>
   <h1><span class="flat">♭</span> 코드 이조기</h1>
   <span class="sub">악보 이미지의 코드를 인식해 원하는 조성으로 일괄 변환</span>
-  <span class="sub" style="margin-left:auto; font-family:Georgia,serif; color:var(--pencil);">build 2026-08-15c</span>
+  <span class="sub" style="margin-left:auto; font-family:Georgia,serif; color:var(--pencil);">build 2026-08-15d</span>
 </header>
 
 <div class="layout">
@@ -125,8 +125,8 @@
           <span style="font-size:12px; color:var(--muted);">코드 글자 크기 (오선 간격 대비)</span>
           <span style="font-size:12px; color:var(--paper); font-weight:600;" id="chordSizeVal">1.35 ~ 2.20</span>
         </div>
-        <input type="range" id="chordSizeSlider" min="80" max="200" value="135" style="width:100%; accent-color:var(--pencil);">
-        <div class="hint" style="margin-top:2px;">코드 글자는 오선 간격에 비례한 크기를 가집니다. 이보다 작은 것(음표 기둥, 가사)은 제외됩니다. 코드를 놓치면 낮추고, 음표·가사가 섞이면 올리세요.</div>
+        <input type="range" id="chordSizeSlider" min="130" max="200" value="135" style="width:100%; accent-color:var(--pencil);">
+        <div class="hint" style="margin-top:2px;">코드 글자는 오선 간격에 비례한 크기를 가집니다(실측 1.55~1.95). 이보다 작은 것(음표 기둥, 가사, 높은음자리표)은 제외됩니다. 코드를 놓치면 낮추고, 음표·가사가 섞이면 올리세요.</div>
       </div>
       <div style="margin-top:10px">
         <div class="row" style="justify-content:space-between; margin-bottom:4px;">
@@ -492,13 +492,17 @@ function findInkComponents(ctx, rx0, ry0, rw, rh){
 // 성분들을 x좌표 기준으로 정렬 후, 간격이 좁고 "높이가 비슷하면"(같은 "단어") 병합.
 // 높이 유사성 조건이 없으면, 근처의 음표 기둥(키가 훨씬 큼)이 실제 글자와 합쳐져
 // 박스가 기둥 높이만큼 부풀어 오르는 문제가 생긴다.
-function groupComponentsIntoWords(components, gapThreshold, maxGroupWidth){
+function groupComponentsIntoWords(components, gapThreshold, maxGroupWidth, staffGap){
   maxGroupWidth = maxGroupWidth || Infinity;
+  // 기둥 판정 기준은 오선 간격에 비례해야 한다. 절대 픽셀값으로 두면 해상도에 따라
+  // 결과가 달라지고, 무엇보다 F처럼 좁고 긴 코드 글자가 기둥으로 오인된다.
+  const stemMaxW = staffGap ? staffGap * 0.25 : 8;
+  const groupStemMaxW = staffGap ? staffGap * 0.30 : 12;
   const filtered = components.filter(c => {
     const w = c.x1-c.x0, h = c.y1-c.y0;
     if(c.area < 3) return false;               // 잡티 제거
     if(w < 1 || h < 1) return false;
-    if(h/w > 3.0 && w < 8) return false;        // 음표 기둥처럼 극단적으로 가늘고 긴 조각 제거
+    if(h/w > 3.0 && w < stemMaxW) return false; // 음표 기둥처럼 극단적으로 가늘고 긴 조각 제거
     return true;
   });
   filtered.sort((a,b) => a.x0 - b.x0);
@@ -528,10 +532,11 @@ function groupComponentsIntoWords(components, gapThreshold, maxGroupWidth){
     cur = { x0:c.x0, y0:c.y0, x1:c.x1, y1:c.y1 };
   }
   if(cur) words.push(cur);
-  // 연쇄 병합으로 우연히 살아남을 수 있는 기둥 잔여물 최종 정리
+  // 연쇄 병합으로 우연히 살아남을 수 있는 기둥 잔여물 최종 정리.
+  // 기준을 오선 간격 기준으로 두어, F 같은 좁고 긴 글자(폭이 기둥보다 훨씬 넓다)는 살린다.
   return words.filter(w => {
     const ww = w.x1-w.x0, wh = w.y1-w.y0;
-    return !(wh/ww > 2.0 && ww < 40);
+    return !(wh/ww > 3.0 && ww < groupStemMaxW);
   });
 }
 
@@ -566,7 +571,7 @@ function detectChordCandidates(ctx, cvWidth, staffSystems){
     const comps = findInkComponents(ctx, 0, bandTop, cvWidth, bandBottom - bandTop);
     const gapThreshold = Math.max(4, sys.gap * 1.0);
     const maxGroupWidth = sys.gap * 8; // 코드 하나가 이 이상 넓어지면 보통 다른 것과 잘못 이어붙은 것
-    const words = groupComponentsIntoWords(comps, gapThreshold, maxGroupWidth);
+    const words = groupComponentsIntoWords(comps, gapThreshold, maxGroupWidth, sys.gap);
     // 1.위치(오선 위 영역) -> 2.글자 크기 -> 3.영어(라틴)스러움 -> 4.이후 모델 인식 단계로
     const sized = words.filter(w => {
       const ratio = (w.y1 - w.y0) / sys.gap;
@@ -756,6 +761,11 @@ async function runOcr(){
   if(!img) return;
   $('btnOcr').disabled = true;
   progWrap.style.display='block'; progBar.style.width='0%';
+  // 재실행 시 이전 결과를 반드시 비운다. (안 그러면 실행할 때마다 후보가 누적되어
+  // 슬라이더를 어느 쪽으로 옮기든 개수가 계속 늘어난다.)
+  chords = [];
+  selectedId = null;
+  renderAll();
   try{
     setStatus('기울기 보정 각도 추정 중…');
     const deskewGuess = estimateDeskewAngle(img, imgW, imgH);
