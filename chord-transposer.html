@@ -89,7 +89,7 @@
 <header>
   <h1><span class="flat">♭</span> 코드 이조기</h1>
   <span class="sub">악보 이미지의 코드를 인식해 원하는 조성으로 일괄 변환</span>
-  <span class="sub" style="margin-left:auto; font-family:Georgia,serif; color:var(--pencil);">build 2026-08-15d</span>
+  <span class="sub" style="margin-left:auto; font-family:Georgia,serif; color:var(--pencil);">build 2026-08-16 02:14:07</span>
 </header>
 
 <div class="layout">
@@ -326,7 +326,8 @@ function binarize(ctx, w, h){
    튜닝 상수는 주석 참고 — 실제 악보로 테스트하며 조정 가능. */
 const STAFF_ROW_BLACK_FRAC = 0.35; // 이 비율 이상 검게 채워진 행을 오선 후보로 봄
 const STAFF_BAND_ABOVE_GAPS = 4;   // 오선 맨 윗줄 기준, 위로 몇 배(줄 간격) 까지를 "코드 영역"으로 볼지
-const STAFF_BAND_MARGIN_GAPS = 0.15; // 오선 바로 위 여백 (오선 자체와 겹치지 않도록)
+const STAFF_BAND_MARGIN_GAPS = 0.35; // 오선 바로 위 여백. 실측상 자리표·조표·음표 빔은 오선에
+                                     // 거의 붙어 있고(0.10~0.15), 진짜 코드는 떨어져 있다(0.55~1.78).
 
 function detectStaffSystems(ctx, w, h){
   const { data } = ctx.getImageData(0, 0, w, h);
@@ -353,6 +354,7 @@ function detectStaffSystems(ctx, w, h){
 
   // 간격이 균등한 5개 연속 선 = 오선 하나
   const systems = [];
+  const used = new Array(centers.length).fill(false);
   for(let i = 0; i + 4 < centers.length; i++){
     const g = centers.slice(i, i+5);
     const gaps = [1,2,3,4].map(j => g[j] - g[j-1]);
@@ -360,8 +362,31 @@ function detectStaffSystems(ctx, w, h){
     const maxDev = Math.max(...gaps.map(x => Math.abs(x - avgGap)));
     if(avgGap > 2 && maxDev < avgGap * 0.35){
       systems.push({ yTop: g[0], yBottom: g[4], gap: avgGap });
+      for(let k = i; k <= i+4; k++) used[k] = true;
       i += 4; // 이 5개는 소비 완료, 다음은 그 뒤부터 탐색
     }
+  }
+
+  // 2차 패스: 인쇄가 흐리거나 스캔 상태가 나빠 5줄 중 1줄이 안 잡히는 단이 있다.
+  // 남은 선들 중 "다른 단과 줄 간격이 거의 같은" 4줄 묶음은 오선으로 인정한다.
+  // (간격 일치를 요구하므로 가사·표 같은 무관한 가로줄이 잘못 잡힐 위험은 낮다.)
+  if(systems.length){
+    const gapsFound = systems.map(s => s.gap).sort((a,b) => a-b);
+    const medianGap = gapsFound[Math.floor(gapsFound.length/2)];
+    for(let i = 0; i + 3 < centers.length; i++){
+      if(used[i] || used[i+1] || used[i+2] || used[i+3]) continue;
+      const g = centers.slice(i, i+4);
+      const gaps = [1,2,3].map(j => g[j] - g[j-1]);
+      const avgGap = gaps.reduce((a,b)=>a+b, 0) / 3;
+      const maxDev = Math.max(...gaps.map(x => Math.abs(x - avgGap)));
+      if(avgGap > 2 && maxDev < avgGap * 0.25 && Math.abs(avgGap - medianGap) <= medianGap * 0.25){
+        // 못 찾은 5번째 줄 위치는 간격으로 추정 (yTop은 실제 값이라 코드 영역 계산에 영향 없음)
+        systems.push({ yTop: g[0], yBottom: g[3] + avgGap, gap: avgGap });
+        for(let k = i; k <= i+3; k++) used[k] = true;
+        i += 3;
+      }
+    }
+    systems.sort((a,b) => a.yTop - b.yTop); // 이후 로직은 위→아래 정렬을 가정한다
   }
   return systems;
 }
@@ -562,6 +587,14 @@ function looksLikeLatinText(ctx, x0, y0, x1, y1){
 // 양쪽에 여유를 둔 창을 쓴다.
 const CHORD_H_RATIO_SPAN = 0.85; // 하한에서 이만큼 위까지 허용
 
+// 코드는 오선 위 허공에 떠 있지만, 자리표·조표·음표 빔은 잉크가 오선까지 이어져 있다.
+// 그래서 후자는 코드 영역 하단에서 "잘려" 박스 밑변이 경계에 딱 붙는다.
+// (오선 바로 위 이음줄 위에 놓인 코드까지 잘못 걸러내지 않도록, 주변 잉크가 아니라
+//  후보 자신의 밑변 위치만 본다.)
+function isClippedAtBand(y1, bandBottom, gap){
+  return (bandBottom - y1) < gap * 0.10;
+}
+
 function detectChordCandidates(ctx, cvWidth, staffSystems){
   const boxes = [];
   const hMin = chordHRatioMin, hMax = chordHRatioMin + CHORD_H_RATIO_SPAN;
@@ -581,6 +614,7 @@ function detectChordCandidates(ctx, cvWidth, staffSystems){
     // 크기 필터가 이 시스템의 후보를 전멸시켰다면 크기 필터는 포기하고 원래 목록을 쓴다.
     const pool = sized.length > 0 ? sized : words;
     for(const w of pool){
+      if(isClippedAtBand(w.y1, bandBottom, sys.gap)) continue;
       if(looksLikeLatinText(ctx, w.x0, w.y0, w.x1, w.y1)) boxes.push(w);
     }
   }
