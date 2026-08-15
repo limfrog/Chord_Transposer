@@ -121,11 +121,11 @@
       </div>
       <div style="margin-top:10px">
         <div class="row" style="justify-content:space-between; margin-bottom:4px;">
-          <span style="font-size:12px; color:var(--muted);">감도 (한글 가사 등 오탐 거르기)</span>
+          <span style="font-size:12px; color:var(--muted);">감도 (오선 검출 실패 시에만 적용)</span>
           <span style="font-size:12px; color:var(--paper); font-weight:600;" id="confVal">35</span>
         </div>
         <input type="range" id="confSlider" min="0" max="70" value="35" style="width:100%; accent-color:var(--pencil);">
-        <div class="hint" style="margin-top:2px;">높일수록 가사 등 오탐은 줄지만 흐릿한 코드도 놓칠 수 있어요. 놓친 코드는 "+ 직접 추가"로 보완하세요.</div>
+        <div class="hint" style="margin-top:2px;">오선을 정상적으로 찾으면 이 값은 쓰이지 않습니다 (코드 영역을 직접 분석). 오선을 못 찾았을 때만 이 감도로 가사 등 오탐을 걸러냅니다.</div>
       </div>
       <div id="progress"><i></i></div>
       <div id="status">이미지를 먼저 불러오세요.</div>
@@ -360,6 +360,105 @@ function isInChordBand(systems, y0, y1){
   return false;
 }
 
+/* ==================== 코드 영역 내 잉크 성분 직접 검출 ====================
+   오선 위치를 알고 나면, 그 바로 위 영역에서는 Tesseract의 텍스트 인식에 기대지
+   않고 직접 검은 픽셀 덩어리(연결 성분)를 찾아 문자 단위 성분을 얻는다.
+   Tesseract 특유의 누락(짧은 단독 문자 등)이나 오탐(음표 기둥을 글자로 착각)을
+   구조적으로 줄일 수 있다. (Node 테스트로 검증됨: 단독 문자 포함 전부 검출,
+   음표 기둥은 형태 필터로 제거) */
+function findInkComponents(ctx, rx0, ry0, rw, rh){
+  rx0 = Math.max(0, Math.round(rx0)); ry0 = Math.max(0, Math.round(ry0));
+  rw = Math.round(rw); rh = Math.round(rh);
+  if(rw <= 0 || rh <= 0) return [];
+  const { data } = ctx.getImageData(rx0, ry0, rw, rh);
+  const isBlack = (x,y) => data[(y*rw+x)*4] === 0;
+  const visited = new Uint8Array(rw*rh);
+  const components = [];
+  const stackX = new Int32Array(rw*rh);
+  const stackY = new Int32Array(rw*rh);
+
+  for(let y=0; y<rh; y++){
+    for(let x=0; x<rw; x++){
+      const idx = y*rw+x;
+      if(visited[idx] || !isBlack(x,y)) continue;
+      let sp = 0;
+      stackX[sp]=x; stackY[sp]=y; sp++;
+      visited[idx]=1;
+      let minX=x,maxX=x,minY=y,maxY=y,area=0;
+      while(sp > 0){
+        sp--;
+        const cx=stackX[sp], cy=stackY[sp];
+        area++;
+        if(cx<minX)minX=cx; if(cx>maxX)maxX=cx;
+        if(cy<minY)minY=cy; if(cy>maxY)maxY=cy;
+        const neighbors = [[cx+1,cy],[cx-1,cy],[cx,cy+1],[cx,cy-1]];
+        for(const [nx,ny] of neighbors){
+          if(nx<0||ny<0||nx>=rw||ny>=rh) continue;
+          const nidx = ny*rw+nx;
+          if(visited[nidx] || !isBlack(nx,ny)) continue;
+          visited[nidx]=1;
+          stackX[sp]=nx; stackY[sp]=ny; sp++;
+        }
+      }
+      components.push({ x0: rx0+minX, y0: ry0+minY, x1: rx0+maxX+1, y1: ry0+maxY+1, area });
+    }
+  }
+  return components;
+}
+
+// 성분들을 x좌표 기준으로 정렬 후, 간격이 좁고 "높이가 비슷하면"(같은 "단어") 병합.
+// 높이 유사성 조건이 없으면, 근처의 음표 기둥(키가 훨씬 큼)이 실제 글자와 합쳐져
+// 박스가 기둥 높이만큼 부풀어 오르는 문제가 생긴다.
+function groupComponentsIntoWords(components, gapThreshold){
+  const filtered = components.filter(c => {
+    const w = c.x1-c.x0, h = c.y1-c.y0;
+    if(c.area < 3) return false;               // 잡티 제거
+    if(w < 1 || h < 1) return false;
+    if(h/w > 3.0 && w < 8) return false;        // 음표 기둥처럼 극단적으로 가늘고 긴 조각 제거
+    return true;
+  });
+  filtered.sort((a,b) => a.x0 - b.x0);
+
+  const words = [];
+  let cur = null;
+  for(const c of filtered){
+    const ch = c.y1 - c.y0;
+    if(cur){
+      const curH = cur.y1 - cur.y0;
+      const heightRatio = Math.max(ch, curH) / Math.max(1, Math.min(ch, curH));
+      const gapOk = c.x0 - cur.x1 <= gapThreshold;
+      const heightOk = heightRatio <= 2.2; // 높이가 2.2배 넘게 차이나면 별개 성분으로 취급
+      if(gapOk && heightOk){
+        cur.x0 = Math.min(cur.x0, c.x0); cur.y0 = Math.min(cur.y0, c.y0);
+        cur.x1 = Math.max(cur.x1, c.x1); cur.y1 = Math.max(cur.y1, c.y1);
+        continue;
+      }
+    }
+    if(cur) words.push(cur);
+    cur = { x0:c.x0, y0:c.y0, x1:c.x1, y1:c.y1 };
+  }
+  if(cur) words.push(cur);
+  // 연쇄 병합으로 우연히 살아남을 수 있는 기둥 잔여물 최종 정리
+  return words.filter(w => {
+    const ww = w.x1-w.x0, wh = w.y1-w.y0;
+    return !(wh/ww > 2.0 && ww < 40);
+  });
+}
+
+// 각 오선 시스템의 "코드 영역"에서 후보 박스를 직접 찾는다
+function detectChordCandidates(ctx, cvWidth, staffSystems){
+  const boxes = [];
+  for(const sys of staffSystems){
+    const bandBottom = sys.yTop - sys.gap * STAFF_BAND_MARGIN_GAPS;
+    const bandTop = Math.max(0, sys.yTop - sys.gap * STAFF_BAND_ABOVE_GAPS);
+    const comps = findInkComponents(ctx, 0, bandTop, cvWidth, bandBottom - bandTop);
+    const gapThreshold = Math.max(4, sys.gap * 1.0);
+    const words = groupComponentsIntoWords(comps, gapThreshold);
+    boxes.push(...words);
+  }
+  return boxes;
+}
+
 /* ==================== 기울기(회전) 보정 ====================
    오선 검출은 가로줄 투영 방식이라 아주 작은 회전(0.5도 정도)에도 완전히 깨진다.
    촬영/스캔본은 거의 항상 약간 기울어져 있으므로, 본 인식 전에 최적 보정각을
@@ -526,15 +625,6 @@ async function runOcr(){
   $('btnOcr').disabled = true;
   progWrap.style.display='block'; progBar.style.width='0%';
   try{
-    if(!worker){
-      setStatus('위치 인식 엔진 로딩 중… (최초 1회, 인터넷 필요)');
-      worker = await Tesseract.createWorker('eng', 1, {
-        logger: m => {
-          if(m.status==='recognizing text') progBar.style.width = Math.round(m.progress*40)+'%';
-        }
-      });
-      await worker.setParameters({ tessedit_pageseg_mode: '11' }); // sparse text: 흩어진 코드 위치 찾기에 유리
-    }
     setStatus('기울기 보정 각도 추정 중…');
     const deskewAngle = estimateDeskewAngle(img, imgW, imgH);
     progBar.style.width = '10%';
@@ -587,23 +677,41 @@ async function runOcr(){
     $('debugLink').style.display = 'inline';
 
     const deskewMsg = deskewAngle !== 0 ? `기울기 ${deskewAngle}도 보정, ` : '';
-    setStatus(staffSystems.length ? `${deskewMsg}오선 ${staffSystems.length}개 검출. 글자 위치 찾는 중…`
-                                   : `${deskewMsg}오선을 못 찾음 (위치 필터 없이 진행). 글자 위치 찾는 중…`);
-    const { data } = await worker.recognize(cv);
-    const rawWords = data.words || [];
-    // Tesseract는 "위치"만 신뢰하고 글자 판독은 하지 않지만, confidence는 여전히 쓸모 있다:
-    // 학습에 없는 형태(한글 등)는 영어 문자 모양과 안 맞아서 대체로 낮은 confidence로 나온다.
-    // → 이 값을 "라틴 문자스러움" 필터로 재활용해 가사 등 오탐을 줄인다.
-    // + 오선이 검출된 경우, "오선 바로 위" 영역이 아니면 후보에서 제외 (가사는 오선 아래이므로 구조적으로 걸러짐)
     // 좌표는 회전+업스케일된 cv 좌표계 그대로 보관 (cvGray에서 크롭할 때 그대로 씀)
     const boxes = [];
-    for(const w of rawWords){
-      const b = w.bbox;
-      const bw = (b.x1 - b.x0) / scale, bh = (b.y1 - b.y0) / scale;
-      if(bw < 8 || bh < 8) continue;
-      if(w.confidence < confThreshold) continue;
-      if(staffSystems.length && !isInChordBand(staffSystems, b.y0, b.y1)) continue;
-      boxes.push({ x0: b.x0, y0: b.y0, x1: b.x1, y1: b.y1 });
+    if(staffSystems.length){
+      // 오선을 찾은 경우: 코드 영역에서 직접 잉크 성분을 검출 (Tesseract 텍스트 인식 불필요 —
+      // 더 정확하고 더 빠름). 신뢰도 슬라이더는 이 경로에서는 쓰이지 않는다.
+      setStatus(`${deskewMsg}오선 ${staffSystems.length}개 검출. 코드 영역에서 후보 찾는 중…`);
+      const cand = detectChordCandidates(cx, cv.width, staffSystems);
+      for(const c of cand){
+        const bw = (c.x1 - c.x0) / scale, bh = (c.y1 - c.y0) / scale;
+        if(bw < 3 || bh < 3) continue;
+        boxes.push({ x0: c.x0, y0: c.y0, x1: c.x1, y1: c.y1 });
+      }
+    }else{
+      // 오선을 못 찾은 경우: Tesseract 위치 검출 + confidence 필터로 대체 (기존 방식)
+      setStatus(`${deskewMsg}오선을 못 찾음 (위치 필터 없이 진행). 위치 인식 엔진 준비 중…`);
+      if(!worker){
+        worker = await Tesseract.createWorker('eng', 1, {
+          logger: m => {
+            if(m.status==='recognizing text') progBar.style.width = (10 + Math.round(m.progress*35))+'%';
+          }
+        });
+        await worker.setParameters({ tessedit_pageseg_mode: '11' }); // sparse text: 흩어진 코드 위치 찾기에 유리
+      }
+      setStatus(`${deskewMsg}글자 위치 찾는 중…`);
+      const { data } = await worker.recognize(cv);
+      const rawWords = data.words || [];
+      // Tesseract는 "위치"만 신뢰하고 글자 판독은 하지 않지만, confidence는 여전히 쓸모 있다:
+      // 학습에 없는 형태(한글 등)는 영어 문자 모양과 안 맞아서 대체로 낮은 confidence로 나온다.
+      for(const w of rawWords){
+        const b = w.bbox;
+        const bw = (b.x1 - b.x0) / scale, bh = (b.y1 - b.y0) / scale;
+        if(bw < 8 || bh < 8) continue;
+        if(w.confidence < confThreshold) continue;
+        boxes.push({ x0: b.x0, y0: b.y0, x1: b.x1, y1: b.y1 });
+      }
     }
     progBar.style.width = '45%';
 
