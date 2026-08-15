@@ -321,7 +321,7 @@ function binarize(ctx, w, h){
    간격이 균등한 5개가 모이면 하나의 오선(5선)으로 인정한다.
    튜닝 상수는 주석 참고 — 실제 악보로 테스트하며 조정 가능. */
 const STAFF_ROW_BLACK_FRAC = 0.35; // 이 비율 이상 검게 채워진 행을 오선 후보로 봄
-const STAFF_BAND_ABOVE_GAPS = 7;   // 오선 맨 윗줄 기준, 위로 몇 배(줄 간격) 까지를 "코드 영역"으로 볼지
+const STAFF_BAND_ABOVE_GAPS = 4;   // 오선 맨 윗줄 기준, 위로 몇 배(줄 간격) 까지를 "코드 영역"으로 볼지
 const STAFF_BAND_MARGIN_GAPS = 0.15; // 오선 바로 위 여백 (오선 자체와 겹치지 않도록)
 
 function detectStaffSystems(ctx, w, h){
@@ -362,12 +362,78 @@ function detectStaffSystems(ctx, w, h){
   return systems;
 }
 
+// 오선 시스템 하나의 "코드 영역" 상/하한을 계산.
+// staffSystems는 위→아래 순서로 정렬되어 있다고 가정 (실제로 항상 위에서부터 검출됨).
+// 위쪽 한계는 원래 STAFF_BAND_ABOVE_GAPS로 계산하되, 바로 이전 오선의 맨 아랫줄을
+// 절대 넘어가지 않도록 다시 한번 잘라낸다 — 안 그러면 절이 여러 줄 쌓인 악보에서
+// 다음 시스템의 코드 영역이 이전 시스템의 마지막 가사 줄까지 침범할 수 있다.
+// 이전 오선(prevBottom)과 다음 오선의 예상 코드영역 하단(searchBottom) 사이를 실제로 스캔해서,
+// 잉크(가사 등)가 있는 마지막 지점을 찾는다. 절이 여러 줄 쌓여 간격이 좁을 때도
+// 실제 콘텐츠 유무를 직접 보고 판단하므로 고정 여백보다 안전하다.
+function findContentBottom(ctx, width, yStart, yEnd){
+  yStart = Math.max(0, Math.floor(yStart));
+  yEnd = Math.max(yStart + 1, Math.ceil(yEnd));
+  const h = yEnd - yStart;
+  const { data } = ctx.getImageData(0, yStart, width, h);
+  const INK_ROW_FRAC = 0.008; // 아주 약한 기준 — 희미한 글자 획도 "콘텐츠 있음"으로 취급
+  const hasInk = new Array(h);
+  for(let y = 0; y < h; y++){
+    let cnt = 0;
+    const base = y * width * 4;
+    for(let x = 0; x < width; x++){
+      if(data[base + x*4] === 0) cnt++;
+    }
+    hasInk[y] = (cnt / width) > INK_ROW_FRAC;
+  }
+  // 이 구간 안에는 보통 [이전 시스템의 잔여 콘텐츠] - [공백] - [현재 시스템 자신의 코드] 순서로 있다.
+  // "마지막 잉크 지점"을 그대로 쓰면 현재 시스템 자신의 코드까지 "피해야 할 콘텐츠"로 착각한다.
+  // 대신 가장 큰 공백 구간을 찾아 그 경계를 "이전 콘텐츠 vs 현재 콘텐츠"의 분리선으로 쓴다.
+  let bestGapLen = 0, bestGapEnd = -1, curGapStart = -1;
+  for(let y = 0; y <= h; y++){
+    const ink = y < h ? hasInk[y] : true; // 끝에 도달하면 공백 구간을 강제로 마감
+    if(!ink){
+      if(curGapStart === -1) curGapStart = y;
+    }else if(curGapStart !== -1){
+      const gapLen = y - curGapStart;
+      if(gapLen > bestGapLen){ bestGapLen = gapLen; bestGapEnd = y; }
+      curGapStart = -1;
+    }
+  }
+  if(bestGapEnd === -1) return yStart; // 콘텐츠가 아예 없음 -> 원래 범위 그대로 사용
+  return yStart + bestGapEnd;
+}
+
+function computeChordBand(staffSystems, index, ctx, width){
+  const sys = staffSystems[index];
+  const bandBottom = sys.yTop - sys.gap * STAFF_BAND_MARGIN_GAPS;
+  const rawBandTop = sys.yTop - sys.gap * STAFF_BAND_ABOVE_GAPS;
+  let bandTop = rawBandTop;
+  if(index > 0){
+    const prevBottom = staffSystems[index-1].yBottom;
+    let safeBoundary = prevBottom + staffSystems[index-1].gap * 0.3;
+    if(ctx && width && bandTop < bandBottom){
+      // 이전 오선 바닥 ~ 이 시스템 코드영역 하단 사이를 실제로 스캔
+      const contentBottom = findContentBottom(ctx, width, prevBottom, bandBottom);
+      safeBoundary = Math.max(safeBoundary, contentBottom);
+    }
+    const capped = Math.max(bandTop, safeBoundary);
+    // 캡을 적용했을 때 검색 영역이 너무 좁아지면(비정상적으로 빽빽한 레이아웃 등) 오히려
+    // 원래(캡 없는) 범위를 그대로 쓴다 — "가끔 가사가 섞일 위험"이 "자기 자신의 코드를
+    // 아예 못 찾는 것"보다 낫다.
+    if(bandBottom - capped >= sys.gap * 0.8){
+      bandTop = capped;
+    }
+  }
+  bandTop = Math.min(bandTop, bandBottom);
+  bandTop = Math.max(0, bandTop);
+  return { bandTop, bandBottom };
+}
+
 // 박스가 어느 오선의 "바로 위" 영역에 들어가는지 확인 (좌표 단위는 systems와 같아야 함)
-function isInChordBand(systems, y0, y1){
+function isInChordBand(systems, y0, y1, ctx, width){
   const boxBottom = y1;
-  for(const sys of systems){
-    const bandBottom = sys.yTop - sys.gap * STAFF_BAND_MARGIN_GAPS;
-    const bandTop = sys.yTop - sys.gap * STAFF_BAND_ABOVE_GAPS;
+  for(let i = 0; i < systems.length; i++){
+    const { bandTop, bandBottom } = computeChordBand(systems, i, ctx, width);
     if(boxBottom >= bandTop && boxBottom <= bandBottom) return true;
   }
   return false;
@@ -461,9 +527,9 @@ function groupComponentsIntoWords(components, gapThreshold){
 // 각 오선 시스템의 "코드 영역"에서 후보 박스를 직접 찾는다
 function detectChordCandidates(ctx, cvWidth, staffSystems){
   const boxes = [];
-  for(const sys of staffSystems){
-    const bandBottom = sys.yTop - sys.gap * STAFF_BAND_MARGIN_GAPS;
-    const bandTop = Math.max(0, sys.yTop - sys.gap * STAFF_BAND_ABOVE_GAPS);
+  for(let i = 0; i < staffSystems.length; i++){
+    const sys = staffSystems[i];
+    const { bandTop, bandBottom } = computeChordBand(staffSystems, i, ctx, cvWidth);
     const comps = findInkComponents(ctx, 0, bandTop, cvWidth, bandBottom - bandTop);
     const gapThreshold = Math.max(4, sys.gap * 1.0);
     const words = groupComponentsIntoWords(comps, gapThreshold);
@@ -605,7 +671,7 @@ function ctcGreedyDecodeBatch(flatData, dims){
   const confidences = [];
   for(let n = 0; n < N; n++){
     let prev = -1, chars = [];
-    let probSum = 0;
+    let charProbSum = 0, charCount = 0;
     for(let t = 0; t < T; t++){
       const base = t*N*C + n*C;
       let best = 0, bestVal = -Infinity;
@@ -613,13 +679,17 @@ function ctcGreedyDecodeBatch(flatData, dims){
         const v = flatData[base+c];
         if(v > bestVal){ bestVal = v; best = c; }
       }
-      probSum += Math.exp(bestVal); // log-softmax -> 확률
-      if(best !== prev && best !== 0) chars.push(MODEL_CHARS[best-1]); // 0 = CTC blank
+      // 실제로 "이 글자다"라고 채택된(반복/blank 제외) 지점의 확률만 확신도에 반영.
+      // blank(대부분의 타임스텝, 거의 항상 확신도가 높음)를 같이 평균 내면 신호가 묻혀버림.
+      if(best !== prev && best !== 0){
+        chars.push(MODEL_CHARS[best-1]);
+        charProbSum += Math.exp(bestVal); // log-softmax -> 확률
+        charCount++;
+      }
       prev = best;
     }
     texts.push(chars.join(''));
-    confidences.push(probSum / T); // 전체 타임스텝 평균 확신도 — 진짜 문자가 아닌 입력(음표머리 등)은
-                                     // 모델이 애매하게 답할 가능성이 높아 이 값이 낮게 나오는 경향이 있음
+    confidences.push(charCount > 0 ? charProbSum / charCount : 0);
   }
   return { texts, confidences };
 }
@@ -679,9 +749,9 @@ async function runOcr(){
       cx.fillStyle = 'rgba(0,140,255,0.16)';
       cx.strokeStyle = 'rgba(0,110,255,0.85)';
       cx.lineWidth = Math.max(1, cv.height/900);
-      for(const sys of staffSystems){
-        const bandBottom = sys.yTop - sys.gap * STAFF_BAND_MARGIN_GAPS;
-        const bandTop = Math.max(0, sys.yTop - sys.gap * STAFF_BAND_ABOVE_GAPS);
+      for(let i = 0; i < staffSystems.length; i++){
+        const sys = staffSystems[i];
+        const { bandTop, bandBottom } = computeChordBand(staffSystems, i, cx, cv.width);
         cx.fillRect(0, bandTop, cv.width, bandBottom - bandTop);
         cx.beginPath();
         cx.moveTo(0, sys.yTop); cx.lineTo(cv.width, sys.yTop);
