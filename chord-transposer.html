@@ -89,7 +89,7 @@
 <header>
   <h1><span class="flat">♭</span> 코드 이조기</h1>
   <span class="sub">악보 이미지의 코드를 인식해 원하는 조성으로 일괄 변환</span>
-  <span class="sub" style="margin-left:auto; font-family:Georgia,serif; color:var(--pencil);">build 2026-08-16 02:14:07</span>
+  <span class="sub" style="margin-left:auto; font-family:Georgia,serif; color:var(--pencil);">build 2026-08-16 03:41:52</span>
 </header>
 
 <div class="layout">
@@ -532,31 +532,32 @@ function groupComponentsIntoWords(components, gapThreshold, maxGroupWidth, staff
   });
   filtered.sort((a,b) => a.x0 - b.x0);
 
+  // 각 성분을 "붙일 수 있는 기존 그룹"에 넣는다. 직전 그룹하고만 비교하면,
+  // x좌표 순서상 글자들 사이에 긴 이음줄 같은 게 끼어들 때 사슬이 끊겨
+  // 뒤쪽 첨자('m7'의 7 등)가 통째로 떨어져 나간다.
   const words = [];
-  let cur = null;
   for(const c of filtered){
     const ch = c.y1 - c.y0;
     const ccy = (c.y0 + c.y1) / 2;
-    if(cur){
-      const curH = cur.y1 - cur.y0;
-      const curCy = (cur.y0 + cur.y1) / 2;
-      const heightRatio = Math.max(ch, curH) / Math.max(1, Math.min(ch, curH));
-      const gapOk = c.x0 - cur.x1 <= gapThreshold;
-      const heightOk = heightRatio <= 2.2; // 높이가 2.2배 넘게 차이나면 별개 성분으로 취급
-      const widthOk = Math.max(cur.x1, c.x1) - Math.min(cur.x0, c.x0) <= maxGroupWidth; // 너무 멀리 떨어진 것과 연쇄 병합 방지
-      // 세로 중심이 비슷한 선에 있어야 같은 글자로 본다. 이게 없으면 바로 옆의
-      // 음표 기둥(중심이 훨씬 아래)이 코드 글자에 들러붙어 박스가 세로로 부푼다.
-      const centerOk = Math.abs(ccy - curCy) <= Math.max(ch, curH) * 0.55;
-      if(gapOk && heightOk && widthOk && centerOk){
-        cur.x0 = Math.min(cur.x0, c.x0); cur.y0 = Math.min(cur.y0, c.y0);
-        cur.x1 = Math.max(cur.x1, c.x1); cur.y1 = Math.max(cur.y1, c.y1);
-        continue;
-      }
+    let target = null;
+    for(let k = words.length - 1; k >= 0; k--){
+      const g = words[k];
+      const gh = g.y1 - g.y0;
+      const gcy = (g.y0 + g.y1) / 2;
+      const heightRatio = Math.max(ch, gh) / Math.max(1, Math.min(ch, gh));
+      const gapOk = c.x0 - g.x1 <= gapThreshold;
+      const heightOk = heightRatio <= 2.2;          // 높이가 2.2배 넘게 차이나면 별개 성분
+      const centerOk = Math.abs(ccy - gcy) <= Math.max(ch, gh) * 0.55; // 세로 중심이 비슷한 선에
+      const widthOk = Math.max(g.x1, c.x1) - Math.min(g.x0, c.x0) <= maxGroupWidth;
+      if(gapOk && heightOk && centerOk && widthOk){ target = g; break; }
     }
-    if(cur) words.push(cur);
-    cur = { x0:c.x0, y0:c.y0, x1:c.x1, y1:c.y1 };
+    if(target){
+      target.x0 = Math.min(target.x0, c.x0); target.y0 = Math.min(target.y0, c.y0);
+      target.x1 = Math.max(target.x1, c.x1); target.y1 = Math.max(target.y1, c.y1);
+    }else{
+      words.push({ x0:c.x0, y0:c.y0, x1:c.x1, y1:c.y1 });
+    }
   }
-  if(cur) words.push(cur);
   // 연쇄 병합으로 우연히 살아남을 수 있는 기둥 잔여물 최종 정리.
   // 기준을 오선 간격 기준으로 두어, F 같은 좁고 긴 글자(폭이 기둥보다 훨씬 넓다)는 살린다.
   return words.filter(w => {
