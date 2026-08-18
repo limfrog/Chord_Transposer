@@ -89,7 +89,7 @@
 <header>
   <h1><span class="flat">♭</span> 코드 이조기</h1>
   <span class="sub">악보 이미지의 코드를 인식해 원하는 조성으로 일괄 변환</span>
-  <span class="sub" style="margin-left:auto; font-family:Georgia,serif; color:var(--pencil);">build 2026-08-16 03:41:52</span>
+  <span class="sub" style="margin-left:auto; font-family:Georgia,serif; color:var(--pencil);">build 2026-08-18 03:05:00 KST</span>
 </header>
 
 <div class="layout">
@@ -123,7 +123,7 @@
       <div style="margin-top:10px">
         <div class="row" style="justify-content:space-between; margin-bottom:4px;">
           <span style="font-size:12px; color:var(--muted);">코드 글자 크기 (오선 간격 대비)</span>
-          <span style="font-size:12px; color:var(--paper); font-weight:600;" id="chordSizeVal">1.35 ~ 2.20</span>
+          <span style="font-size:12px; color:var(--paper); font-weight:600;" id="chordSizeVal">1.35 ~ 3.00</span>
         </div>
         <input type="range" id="chordSizeSlider" min="130" max="200" value="135" style="width:100%; accent-color:var(--pencil);">
         <div class="hint" style="margin-top:2px;">코드 글자는 오선 간격에 비례한 크기를 가집니다(실측 1.55~1.95). 이보다 작은 것(음표 기둥, 가사, 높은음자리표)은 제외됩니다. 코드를 놓치면 낮추고, 음표·가사가 섞이면 올리세요.</div>
@@ -246,7 +246,7 @@ document.getElementById('confSlider').addEventListener('input', e=>{
 document.getElementById('chordSizeSlider').addEventListener('input', e=>{
   chordHRatioMin = Number(e.target.value) / 100;
   document.getElementById('chordSizeVal').textContent =
-    chordHRatioMin.toFixed(2) + ' ~ ' + (chordHRatioMin + 0.85).toFixed(2);
+    chordHRatioMin.toFixed(2) + ' ~ ' + (chordHRatioMin + 1.65).toFixed(2);
 });
 let worker = null;
 
@@ -586,7 +586,9 @@ function looksLikeLatinText(ctx, x0, y0, x1, y1){
 // 높이/줄간격이 약 1.6~1.95인 반면, 오탐은 확실히 다른 대역에 몰려 있다:
 //   음표 기둥·빔 조각 0.25~0.33 / 한글 가사·지시어 0.55~0.62 / 이음줄·음자리표 1.05~1.25
 // 양쪽에 여유를 둔 창을 쓴다.
-const CHORD_H_RATIO_SPAN = 0.85; // 하한에서 이만큼 위까지 허용
+const CHORD_H_RATIO_SPAN = 1.65; // 하한에서 이만큼 위까지 허용.
+                                   // 윗첨자(A⁷, Dmaj⁷, Asus⁴ 등)가 붙으면 글자 전체 높이가 크게
+                                   // 늘어난다(실측 2.44~2.95). 좁게 두면 그런 코드가 통째로 탈락한다.
 
 // 코드는 오선 위 허공에 떠 있지만, 자리표·조표·음표 빔은 잉크가 오선까지 이어져 있다.
 // 그래서 후자는 코드 영역 하단에서 "잘려" 박스 밑변이 경계에 딱 붙는다.
