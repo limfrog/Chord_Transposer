@@ -357,16 +357,37 @@ const STAFF_BAND_MARGIN_GAPS = 0.35; // 오선 바로 위 여백. 실측상 자�
 
 function detectStaffSystems(ctx, w, h){
   const { data } = ctx.getImageData(0, 0, w, h);
-  const blackFrac = new Float32Array(h);
-  for(let y = 0; y < h; y++){
-    let cnt = 0;
-    const rowBase = y * w * 4;
-    for(let x = 0; x < w; x++){
-      if(data[rowBase + x*4] === 0) cnt++; // 이진화 후 0 = 검정(잉크)
+  const isBlack = (x, y) => data[(y*w + x)*4] === 0;
+
+  // 오선 줄은 "가로로 길고 세로로 얇다". 반면 16분음표 빔도 가로로 길지만 훨씬 두껍다.
+  // 단순 행 투영으로는 둘이 구분되지 않아, 빔이 많은 단을 통째로 놓쳤다(실측: 6단 중 3단 실패).
+  // 그래서 세로 런길이가 짧은(=얇은) 잉크만 남긴 뒤 행 투영을 한다. 빔은 원천적으로 배제된다.
+  const hist = new Array(60).fill(0);
+  for(let x = 0; x < w; x++){
+    let run = 0;
+    for(let y = 0; y < h; y++){
+      if(isBlack(x, y)) run++;
+      else { if(run > 0 && run < 60) hist[run]++; run = 0; }
     }
-    blackFrac[y] = cnt / w;
+    if(run > 0 && run < 60) hist[run]++;
   }
-  // 인접한 후보 행을 하나의 선으로 병합 (두꺼운 선/안티앨리어싱 대응)
+  let mode = 1, best = 0;
+  for(let t = 1; t < 15; t++) if(hist[t] > best){ best = hist[t]; mode = t; }
+  const maxRun = Math.max(6, Math.round(mode * 2.5)); // 오선 줄로 인정할 최대 세로 두께
+
+  const blackFrac = new Float32Array(h);
+  for(let x = 0; x < w; x++){
+    let y = 0;
+    while(y < h){
+      if(!isBlack(x, y)){ y++; continue; }
+      const s = y;
+      while(y < h && isBlack(x, y)) y++;
+      if(y - s <= maxRun) for(let k = s; k < y; k++) blackFrac[k]++;
+    }
+  }
+  for(let y = 0; y < h; y++) blackFrac[y] /= w;
+
+  // 인접한 후보 행을 하나의 선으로 병합
   const merged = [];
   let cur = null;
   for(let y = 0; y < h; y++){
@@ -378,41 +399,57 @@ function detectStaffSystems(ctx, w, h){
   if(cur) merged.push(cur);
   const centers = merged.map(l => (l.start + l.end) / 2);
 
-  // 간격이 균등한 5개 연속 선 = 오선 하나
+
+  // 오선 찾기: "정렬된 후보 중 연속한 5개"를 요구하면, 가사·이음줄이 만든 가짜 가로선이
+  // 중간에 하나만 끼어도 그 단을 통째로 놓친다(실측: 가짜 선 2개 때문에 단 전체 탈락).
+  // 그래서 "등간격 격자 맞추기" 방식으로 바꾼다 — 시작선과 간격을 가정하고 5줄 위치에
+  // 후보가 있는지 확인한다. 중간에 낀 가짜 선은 자연히 무시된다.
   const systems = [];
-  const used = new Array(centers.length).fill(false);
-  for(let i = 0; i + 4 < centers.length; i++){
-    const g = centers.slice(i, i+5);
-    const gaps = [1,2,3,4].map(j => g[j] - g[j-1]);
-    const avgGap = gaps.reduce((a,b)=>a+b, 0) / 4;
-    const maxDev = Math.max(...gaps.map(x => Math.abs(x - avgGap)));
-    if(avgGap > 2 && maxDev < avgGap * 0.35){
-      systems.push({ yTop: g[0], yBottom: g[4], gap: avgGap });
-      for(let k = i; k <= i+4; k++) used[k] = true;
-      i += 4; // 이 5개는 소비 완료, 다음은 그 뒤부터 탐색
+  const nC = centers.length;
+  const near = (pos, tol) => centers.some(c => Math.abs(c - pos) <= tol);
+  const cand = [];
+  for(let i = 0; i < nC; i++){
+    for(let j = i + 1; j < nC; j++){
+      const g = centers[j] - centers[i];
+      if(g < 3 || g > 200) continue;            // 상식적인 줄 간격 범위
+      const tol = Math.max(1.5, g * 0.30);
+      let hit = 0;
+      for(let k = 1; k <= 4; k++) if(near(centers[i] + k*g, tol)) hit++;
+      if(hit === 4) cand.push({ yTop: centers[i], gap: g, yBottom: centers[i] + 4*g, hit });
     }
   }
+  // 위에서부터 훑으며 서로 겹치지 않게 채택 (같은 자리에서 여러 간격이 맞으면 작은 간격 우선)
+  cand.sort((a,b) => a.yTop - b.yTop || (b.hit - a.hit) || a.gap - b.gap);
+  for(const c of cand){
+    const overlaps = systems.some(s => c.yTop < s.yBottom + s.gap*0.5 && c.yBottom > s.yTop - s.gap*0.5);
+    if(!overlaps) systems.push(c);
+  }
 
-  // 2차 패스: 인쇄가 흐리거나 스캔 상태가 나빠 5줄 중 1줄이 안 잡히는 단이 있다.
-  // 남은 선들 중 "다른 단과 줄 간격이 거의 같은" 4줄 묶음은 오선으로 인정한다.
-  // (간격 일치를 요구하므로 가사·표 같은 무관한 가로줄이 잘못 잡힐 위험은 낮다.)
+  // 보조 패스: 인쇄가 흐려 5줄 중 1줄이 아예 안 잡히는 단이 있다.
+  // 남은 구간에서 "다른 단과 줄 간격이 거의 같은" 4줄 격자는 오선으로 인정한다.
   if(systems.length){
     const gapsFound = systems.map(s => s.gap).sort((a,b) => a-b);
     const medianGap = gapsFound[Math.floor(gapsFound.length/2)];
-    for(let i = 0; i + 3 < centers.length; i++){
-      if(used[i] || used[i+1] || used[i+2] || used[i+3]) continue;
-      const g = centers.slice(i, i+4);
-      const gaps = [1,2,3].map(j => g[j] - g[j-1]);
-      const avgGap = gaps.reduce((a,b)=>a+b, 0) / 3;
-      const maxDev = Math.max(...gaps.map(x => Math.abs(x - avgGap)));
-      if(avgGap > 2 && maxDev < avgGap * 0.25 && Math.abs(avgGap - medianGap) <= medianGap * 0.25){
-        // 못 찾은 5번째 줄 위치는 간격으로 추정 (yTop은 실제 값이라 코드 영역 계산에 영향 없음)
-        systems.push({ yTop: g[0], yBottom: g[3] + avgGap, gap: avgGap });
-        for(let k = i; k <= i+3; k++) used[k] = true;
-        i += 3;
-      }
+    for(let i = 0; i < nC; i++){
+      const g = medianGap;
+      const tol = Math.max(1.5, g * 0.30);
+      let hit = 0;
+      for(let k = 1; k <= 3; k++) if(near(centers[i] + k*g, tol)) hit++;
+      if(hit < 3) continue;
+      const yTop = centers[i], yBottom = yTop + 4*g;
+      const overlaps = systems.some(s => yTop < s.yBottom + s.gap*0.5 && yBottom > s.yTop - s.gap*0.5);
+      if(!overlaps) systems.push({ yTop, gap: g, yBottom });
     }
-    systems.sort((a,b) => a.yTop - b.yTop); // 이후 로직은 위→아래 정렬을 가정한다
+  }
+  systems.sort((a,b) => a.yTop - b.yTop); // 이후 로직은 위→아래 정렬을 가정한다
+
+  // 한 페이지의 오선 줄 간격은 거의 균일하다. 가사 줄 같은 것에 격자가 우연히 맞아
+  // 생긴 가짜 오선은 간격이 크게 어긋나므로(실측: 진짜 24 vs 가짜 98·153) 걸러낸다.
+  if(systems.length >= 2){
+    const gs = systems.map(s => s.gap).sort((a,b) => a-b);
+    const medianGap = gs[Math.floor(gs.length/2)];
+    const kept = systems.filter(s => s.gap >= medianGap*0.6 && s.gap <= medianGap*1.6);
+    if(kept.length) systems.length = 0, systems.push(...kept);
   }
   return systems;
 }
@@ -638,10 +675,21 @@ function isAttachedToStaff(ctx, cand, bandBottom, gap, canvasH){
   const x0 = Math.max(0, cand.x0 - 2), x1 = cand.x1 + 2;
   if(y1 <= y0) return false;
   const comps = findInkComponents(ctx, x0, y0, x1 - x0, y1 - y0);
-  const overlapping = comps.filter(c => c.x0 < cand.x1 && c.x1 > cand.x0 && c.y0 < cand.y1 + gap * 0.15);
-  if(overlapping.length === 0) return false;
-  const maxY1 = Math.max(...overlapping.map(c => c.y1));
-  return (maxY1 - cand.y1) > gap * 0.3;
+  const candW = Math.max(1, cand.x1 - cand.x0);
+  // 아래로 크게 이어지는 성분들이 후보 폭을 얼마나 덮는지 본다.
+  // 폭 비율을 안 보면, 코드 뒤에 우연히 겹친 가느다란 음표 기둥 하나 때문에
+  // 진짜 코드가 "오선에 붙었다"고 오판된다(실측: 폭 2px 기둥 vs 코드 56px).
+  let covered = 0;
+  for(const c of comps){
+    if(!(c.x0 < cand.x1 && c.x1 > cand.x0)) continue;
+    // 후보 "자신의" 잉크만 본다. 성분이 후보 윗변 근처에서 시작해야 후보 글자로 인정.
+    // (이 조건이 없으면, 음표 기둥을 통해 연결된 오선 줄이 후보 폭 전체를 덮어버려
+    //  진짜 코드가 오선에 붙은 것으로 오판된다.)
+    if(c.y0 > cand.y0 + gap * 0.3) continue;
+    if((c.y1 - cand.y1) <= gap * 0.3) continue;
+    covered += Math.min(c.x1, cand.x1) - Math.max(c.x0, cand.x0);
+  }
+  return (covered / candW) >= 0.35;
 }
 
 function detectChordCandidates(ctx, cvWidth, staffSystems){
@@ -659,10 +707,10 @@ function detectChordCandidates(ctx, cvWidth, staffSystems){
       const ratio = (w.y1 - w.y0) / sys.gap;
       return ratio >= hMin && ratio <= hMax;
     });
-    // 폰트 비율이 예상 밖인 악보에서 전부 걸러지는 사고를 막는 안전장치:
-    // 크기 필터가 이 시스템의 후보를 전멸시켰다면 크기 필터는 포기하고 원래 목록을 쓴다.
-    const pool = sized.length > 0 ? sized : words;
-    for(const w of pool){
+    // (예전에는 "크기 필터가 전멸하면 필터를 포기하고 전체를 쓴다"는 안전장치가 있었는데,
+    //  가짜 오선이 잡히면 그 거대한 밴드에서 모든 잉크가 후보로 쏟아지는 부작용이 있었다.
+    //  이제 오선 간격을 검증하므로, 비어 있으면 실제로 그 밴드에 코드가 없는 것으로 본다.)
+    for(const w of sized){
       if(isAttachedToStaff(ctx, w, bandBottom, sys.gap, ctx.canvas.height)) continue;
       if(looksLikeLatinText(ctx, w.x0, w.y0, w.x1, w.y1)) boxes.push(w);
     }
