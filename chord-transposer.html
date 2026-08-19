@@ -89,7 +89,7 @@
 <header>
   <h1><span class="flat">♭</span> 코드 이조기</h1>
   <span class="sub">악보 이미지의 코드를 인식해 원하는 조성으로 일괄 변환</span>
-  <span class="sub" style="margin-left:auto; font-family:Georgia,serif; color:var(--pencil);">build 2026-08-18 03:05:00 KST</span>
+  <span class="sub" style="margin-left:auto; font-family:Georgia,serif; color:var(--pencil);" id="buildStamp">build …</span>
 </header>
 
 <div class="layout">
@@ -251,6 +251,32 @@ document.getElementById('chordSizeSlider').addEventListener('input', e=>{
 let worker = null;
 
 const $ = id => document.getElementById(id);
+
+/* 빌드 표시: 손으로 적지 않고 이 HTML 파일 자체의 최종 수정 시각을 읽어서 보여준다.
+   캐시된 옛 파일을 보고 있는지 판별하는 게 목적이므로 파일 시각이 가장 정확하다.
+   1순위: 서버가 주는 Last-Modified 헤더 / 2순위: document.lastModified (로컬 파일). */
+(function showBuildStamp(){
+  const el = document.getElementById('buildStamp');
+  if(!el) return;
+  const fmt = d => {
+    const p = n => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} `
+         + `${p(d.getHours())}:${p(d.getMinutes())}`;
+  };
+  const fallback = () => {
+    const d = new Date(document.lastModified);
+    el.textContent = isNaN(d) ? 'build (알 수 없음)' : 'build ' + fmt(d);
+  };
+  fetch(location.href, { method: 'HEAD', cache: 'no-store' })
+    .then(res => {
+      const lm = res.headers.get('Last-Modified');
+      if(!lm) return fallback();
+      const d = new Date(lm);
+      if(isNaN(d)) return fallback();
+      el.textContent = 'build ' + fmt(d);
+    })
+    .catch(fallback);
+})();
 const drop=$('drop'), imgWrap=$('imgWrap'), srcImg=$('srcImg'), outCanvas=$('outCanvas');
 const statusEl=$('status'), progWrap=$('progress'), progBar=progWrap.querySelector('i');
 
@@ -570,16 +596,23 @@ function groupComponentsIntoWords(components, gapThreshold, maxGroupWidth, staff
 // 라틴 문자(코드) vs 한글 판별: 볼드 코드 글자는 획이 두꺼워 박스 안을 빽빽하게 채우는 반면,
 // 한글은 초성·중성·종성 조합 구조라 상대적으로 성기다. 합성 라틴 코드 400개 vs 한글 음절
 // 400개로 실측 검증한 임계값 (라틴 96.8% 유지, 한글 85% 차단).
-const LATIN_FILL_RATIO_MIN = 0.30;
+const LATIN_VAR_SUBASPECT_MAX = 2.5; // 위첨자(작은 숫자)가 있으면 부분 성분 종횡비 분산이 더 커진다.
+                                      // 실제 악보 3장으로 재보정: 이 값에서 진짜 코드 손실 없이 한글은 계속 걸러짐.
 
 function looksLikeLatinText(ctx, x0, y0, x1, y1){
   const w = x1 - x0, h = y1 - y0;
   if(w <= 0 || h <= 0) return true; // 방어적 기본값 — 판단 불가 시 통과시키고 뒤 단계(모델+문법)에 맡김
   const comps = findInkComponents(ctx, x0, y0, w, h).filter(c => c.area >= 2);
   if(comps.length === 0) return false;
-  const totalArea = comps.reduce((s,c) => s + c.area, 0);
-  const fillRatio = totalArea / (w * h);
-  return fillRatio >= LATIN_FILL_RATIO_MIN;
+  // fillRatio(잉크 밀도)는 첨자(위/아래 첨자, 쌓임 표기)가 도입된 뒤로 더는 안전하지 않다 —
+  // 실측 결과 새 스타일 코드의 절반 이상이 옛 임계값 밑으로 떨어진다(첨자는 여백이 많아서).
+  // 대신 "하위 성분들의 종횡비 분산"을 쓴다: 한글은 초성·중성·종성이 서로 다른 모양의
+  // 조각으로 쪼개져 분산이 크고(합성 실측 평균 6.3), 코드 글자는 첨자가 섞여도 분산이
+  // 작다(합성 실측 새 스타일 기준 상위 10%도 0.42 미만). 새 스타일 400개로 재검증함.
+  const subAspects = comps.map(c => (c.y1-c.y0) / Math.max(1, c.x1-c.x0));
+  const mean = subAspects.reduce((a,b)=>a+b, 0) / subAspects.length;
+  const varSA = subAspects.reduce((a,b)=>a+(b-mean)**2, 0) / subAspects.length;
+  return varSA <= LATIN_VAR_SUBASPECT_MAX;
 }
 
 // 코드 글자 높이는 오선 줄 간격에 비례한다. 실제 악보로 측정한 결과 진짜 코드는
@@ -594,8 +627,21 @@ const CHORD_H_RATIO_SPAN = 1.65; // 하한에서 이만큼 위까지 허용.
 // 그래서 후자는 코드 영역 하단에서 "잘려" 박스 밑변이 경계에 딱 붙는다.
 // (오선 바로 위 이음줄 위에 놓인 코드까지 잘못 걸러내지 않도록, 주변 잉크가 아니라
 //  후보 자신의 밑변 위치만 본다.)
-function isClippedAtBand(y1, bandBottom, gap){
-  return (bandBottom - y1) < gap * 0.10;
+// 코드는 오선까지 잉크가 안 이어지지만, 자리표·조표·음표 빔은 오선까지 같은 잉크
+// 덩어리가 계속된다. 후보 박스와 같은 x범위·거의 같은 시작점에서 겹치는 잉크가
+// 경계 아래로 크게(줄간격의 0.3배 이상) 더 이어지면 "붙어있음"으로 본다.
+// (악보마다 코드-오선 간격이 다르므로 고정 거리 기준은 신뢰할 수 없었음 — 실측으로 확인.)
+function isAttachedToStaff(ctx, cand, bandBottom, gap, canvasH){
+  const extend = gap * 0.6;
+  const y0 = Math.max(0, cand.y0 - 2);
+  const y1 = Math.min(canvasH, bandBottom + extend);
+  const x0 = Math.max(0, cand.x0 - 2), x1 = cand.x1 + 2;
+  if(y1 <= y0) return false;
+  const comps = findInkComponents(ctx, x0, y0, x1 - x0, y1 - y0);
+  const overlapping = comps.filter(c => c.x0 < cand.x1 && c.x1 > cand.x0 && c.y0 < cand.y1 + gap * 0.15);
+  if(overlapping.length === 0) return false;
+  const maxY1 = Math.max(...overlapping.map(c => c.y1));
+  return (maxY1 - cand.y1) > gap * 0.3;
 }
 
 function detectChordCandidates(ctx, cvWidth, staffSystems){
@@ -617,7 +663,7 @@ function detectChordCandidates(ctx, cvWidth, staffSystems){
     // 크기 필터가 이 시스템의 후보를 전멸시켰다면 크기 필터는 포기하고 원래 목록을 쓴다.
     const pool = sized.length > 0 ? sized : words;
     for(const w of pool){
-      if(isClippedAtBand(w.y1, bandBottom, sys.gap)) continue;
+      if(isAttachedToStaff(ctx, w, bandBottom, sys.gap, ctx.canvas.height)) continue;
       if(looksLikeLatinText(ctx, w.x0, w.y0, w.x1, w.y1)) boxes.push(w);
     }
   }
