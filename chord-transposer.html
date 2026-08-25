@@ -716,6 +716,32 @@ function looksLikeSlur(ctx, x0, y0, x1, y1){
   return comps.length <= 2;
 }
 
+// 이음줄이 코드 글자에 맞닿아 한 덩어리가 된 경우, 박스 오른쪽의 이음줄 부분을 잘라낸다.
+// 글자 구간은 열별 잉크 높이가 크고 들쭉날쭉하지만, 이음줄 구간은 낮고 평평하다.
+// (실측: A 구간 20~30 / 이음줄 구간 8~9, D 구간 33~44 / 이음줄 9)
+// 자르지 않으면 박스가 넓어져 "이음줄" 또는 "오선에 부착됨"으로 오판되어 진짜 코드가 버려진다.
+function trimTrailingSlur(ctx, box, gap){
+  const w = box.x1 - box.x0, h = box.y1 - box.y0;
+  if(w <= 0 || h <= 0 || w < gap * 1.5) return box;
+  const { data } = ctx.getImageData(box.x0, box.y0, w, h);
+  const col = new Array(w).fill(0);
+  for(let x = 0; x < w; x++){
+    let c = 0;
+    for(let y = 0; y < h; y++) if(data[(y*w + x)*4] === 0) c++;
+    col[x] = c;
+  }
+  const peak = Math.max(...col);
+  if(peak <= 0) return box;
+  const thin = peak * 0.35;          // 이 아래면 "가느다란 꼬리"로 본다
+  // 오른쪽 끝에서부터 연속으로 얇은 구간이 얼마나 이어지는지 센다
+  let cut = w;
+  while(cut > 0 && col[cut-1] <= thin) cut--;
+  const tail = w - cut;
+  if(tail < gap * 0.8) return box;   // 꼬리가 짧으면 글자의 일부일 수 있으니 두고 본다
+  if(cut < gap * 0.5) return box;    // 남는 글자가 너무 작으면 자르지 않는다
+  return { x0: box.x0, y0: box.y0, x1: box.x0 + cut, y1: box.y1 };
+}
+
 function detectChordCandidates(ctx, cvWidth, staffSystems){
   const boxes = [];
   const hMin = chordHRatioMin, hMax = chordHRatioMin + CHORD_H_RATIO_SPAN;
@@ -734,7 +760,8 @@ function detectChordCandidates(ctx, cvWidth, staffSystems){
     // (예전에는 "크기 필터가 전멸하면 필터를 포기하고 전체를 쓴다"는 안전장치가 있었는데,
     //  가짜 오선이 잡히면 그 거대한 밴드에서 모든 잉크가 후보로 쏟아지는 부작용이 있었다.
     //  이제 오선 간격을 검증하므로, 비어 있으면 실제로 그 밴드에 코드가 없는 것으로 본다.)
-    for(const w of sized){
+    for(let w of sized){
+      w = trimTrailingSlur(ctx, w, sys.gap);   // 붙어 있는 이음줄 꼬리를 먼저 떼어낸다
       if(isAttachedToStaff(ctx, w, bandBottom, sys.gap, ctx.canvas.height)) continue;
       if(looksLikeSlur(ctx, w.x0, w.y0, w.x1, w.y1)) continue;
       if(looksLikeLatinText(ctx, w.x0, w.y0, w.x1, w.y1)) boxes.push(w);
