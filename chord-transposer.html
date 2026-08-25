@@ -207,21 +207,30 @@ function transposeChord(raw, semis, pref){
   const t = norm(raw);
   const m = CHORD_RE.exec(t);
   if(!m) return t; // 파싱 실패 시 원문 유지
+  // 이조량이 0이면 손대지 않는다. (A/C# 를 A/Db 로 바꿔버리는 일이 없도록)
+  if(semis === 0) return t;
   const g = m.groups;
-  const table = pref==='sharp' ? SHARP : pref==='flat' ? FLAT : AUTO;
-  const shift = n => table[(n + semis + 120) % 12];
+  // 자동 모드에서는 "원본이 쓴 임시표"를 음마다 따라간다.
+  // 원본이 C# 라고 적었으면 올림 계열로, Db 라고 적었으면 내림 계열로 옮긴다.
+  // (자동 표를 그대로 쓰면 C# 이 Db 로 바뀌어 원곡 표기와 어긋난다.)
+  const pick = acc => pref==='sharp' ? SHARP
+                    : pref==='flat'  ? FLAT
+                    : acc==='#' ? SHARP
+                    : acc==='b' ? FLAT
+                    : AUTO;
+  const shift = (n, acc) => pick(acc)[(n + semis + 120) % 12];
   if(g.root){
     const rootPc = NOTE_PC[g.root] + (g.acc==='#'?1:g.acc==='b'?-1:0);
-    let out = shift(rootPc) + (g.quality||'');
+    let out = shift(rootPc, g.acc) + (g.quality||'');
     if(g.bass){
       const bassPc = NOTE_PC[g.bass] + (g.bassAcc==='#'?1:g.bassAcc==='b'?-1:0);
-      out += '/' + shift(bassPc);
+      out += '/' + shift(bassPc, g.bassAcc);
     }
     return out;
   }
   if(g.bassOnlyRoot){
     const bassPc = NOTE_PC[g.bassOnlyRoot] + (g.bassOnlyAcc==='#'?1:g.bassOnlyAcc==='b'?-1:0);
-    return '/' + shift(bassPc);
+    return '/' + shift(bassPc, g.bassOnlyAcc);
   }
   return t;
 }
@@ -611,7 +620,11 @@ function groupComponentsIntoWords(components, gapThreshold, maxGroupWidth, staff
       const gapOk = c.x0 - g.x1 <= gapThreshold;
       const heightOk = heightRatio <= 2.2;          // 높이가 2.2배 넘게 차이나면 별개 성분
       const centerOk = Math.abs(ccy - gcy) <= Math.max(ch, gh) * 0.55; // 세로 중심이 비슷한 선에
-      const widthOk = Math.max(g.x1, c.x1) - Math.min(g.x0, c.x0) <= maxGroupWidth;
+      // 폭 상한을 오선 간격만으로 두면, 큰 폰트로 쓰인 슬래시 코드(Bbm/Db 등)가
+      // 상한을 넘어 "/" 자리에서 쪼개진다(실측: 상한 172px vs 실제 220px).
+      // 글자 자신의 높이에도 연동시켜, 큰 글씨는 그만큼 넓게 허용한다.
+      const allowW = Math.max(maxGroupWidth, Math.max(gh, ch) * 4.5);
+      const widthOk = Math.max(g.x1, c.x1) - Math.min(g.x0, c.x0) <= allowW;
       if(gapOk && heightOk && centerOk && widthOk){ target = g; break; }
     }
     if(target){
@@ -692,6 +705,17 @@ function isAttachedToStaff(ctx, cand, bandBottom, gap, canvasH){
   return (covered / candW) >= 0.35;
 }
 
+// 이음줄(슬러)은 획 하나로 길게 이어진 매끄러운 곡선이라, 넓은 박스인데도
+// 연결 성분이 1~2개뿐이다. 반면 넓은 진짜 코드(Bbm/Db 등)는 글자마다 조각이
+// 나뉘어 최소 3개다. 실측: 이음줄 성분 1~2개 / 넓은 실제 코드 3~5개.
+// 폭 비율만으로는 구분되지 않는다(이음줄 4.3~4.4 vs 실제 코드 최대 8.4).
+function looksLikeSlur(ctx, x0, y0, x1, y1){
+  const w = x1 - x0, h = y1 - y0;
+  if(h <= 0 || w / h < 2.5) return false;   // 가로로 충분히 길 때만 판정
+  const comps = findInkComponents(ctx, x0, y0, w, h).filter(c => c.area >= 2);
+  return comps.length <= 2;
+}
+
 function detectChordCandidates(ctx, cvWidth, staffSystems){
   const boxes = [];
   const hMin = chordHRatioMin, hMax = chordHRatioMin + CHORD_H_RATIO_SPAN;
@@ -712,6 +736,7 @@ function detectChordCandidates(ctx, cvWidth, staffSystems){
     //  이제 오선 간격을 검증하므로, 비어 있으면 실제로 그 밴드에 코드가 없는 것으로 본다.)
     for(const w of sized){
       if(isAttachedToStaff(ctx, w, bandBottom, sys.gap, ctx.canvas.height)) continue;
+      if(looksLikeSlur(ctx, w.x0, w.y0, w.x1, w.y1)) continue;
       if(looksLikeLatinText(ctx, w.x0, w.y0, w.x1, w.y1)) boxes.push(w);
     }
   }
