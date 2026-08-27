@@ -189,7 +189,7 @@ const AUTO  = ['C','Db','D','Eb','E','F','F#','G','Ab','A','Bb','B'];
 const KEYS  = ['C','Db','D','Eb','E','F','F#','G','Ab','A','Bb','B'];
 
 // 일반 코드(C, F#m7, Bb/D) + 루트 없이 베이스만 적은 축약 표기(/D, /F#) 모두 허용
-const CHORD_RE = /^(?:(?<root>[A-G])(?<acc>[#b]?)(?<quality>(?:maj|min|add|sus|dim|aug|alt|M|m|\d|[#b()+\-°øΔ])*)(?:\/(?<bass>[A-G])(?<bassAcc>[#b]?))?|\/(?<bassOnlyRoot>[A-G])(?<bassOnlyAcc>[#b]?))$/;
+const CHORD_RE = /^(?:(?<root>[A-G])(?<acc>[#b]?)(?<quality>(?:maj|min|add|sus|dim|aug|alt|M|m|o|\d|[#b()+\-°øΔ])*)(?:\/(?<bass>[A-G])(?<bassAcc>[#b]?))?|\/(?<bassOnlyRoot>[A-G])(?<bassOnlyAcc>[#b]?))$/;
 
 function norm(t){
   return t.normalize('NFKC')
@@ -709,7 +709,10 @@ function isAttachedToStaff(ctx, cand, bandBottom, gap, canvasH){
     // (이 조건이 없으면, 음표 기둥을 통해 연결된 오선 줄이 후보 폭 전체를 덮어버려
     //  진짜 코드가 오선에 붙은 것으로 오판된다.)
     if(c.y0 > cand.y0 + gap * 0.3) continue;
-    if((c.y1 - cand.y1) <= gap * 0.3) continue;
+    // 자리표·조표는 오선 안으로 깊이 내려가지만, 오선 첫 줄에 살짝 닿게 인쇄된 코드는
+    // 얕게만 걸친다(실측: C/D 글자 0.16칸 vs 오선에 이어진 성분 0.61칸).
+    // 실측 스윕: 0.3칸 304/320 오탐14 / 0.5칸 305 오탐14 / 0.7칸 308 오탐39(폭증).
+    if((c.y1 - cand.y1) <= gap * 0.5) continue;
     covered += Math.min(c.x1, cand.x1) - Math.max(c.x0, cand.x0);
   }
   return (covered / candW) >= 0.35;
@@ -864,7 +867,7 @@ function boxFromRotatedToOriginal(x0, y0, x1, y1, cx, cy, angleDeg){
    Tesseract는 "글자가 어디 있는지"(위치 검출)만 담당하고,
    "그 글자가 무엇인지"(판독)는 합성 데이터로 학습한 CRNN 모델이 담당한다.
    data.py의 CHARS와 순서가 정확히 같아야 함 (인덱스 = 클래스 id). */
-const MODEL_CHARS = "ABCDEFGMabdgijmnrsu0123456789#()+-/".split('');
+const MODEL_CHARS = "ABCDEFGMabdgijmnorsu0123456789#()+-/".split('');  // o: 감7화음 표기(Bbo7). data.py CHARS 와 반드시 동일할 것
 const MODEL_IMG_W = 100, MODEL_IMG_H = 32;
 const ONNX_MODEL_URL = './chord_crnn.onnx';
 let ortSession = null;
