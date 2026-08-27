@@ -123,9 +123,9 @@
       <div style="margin-top:10px">
         <div class="row" style="justify-content:space-between; margin-bottom:4px;">
           <span style="font-size:12px; color:var(--muted);">코드 글자 크기 (오선 간격 대비)</span>
-          <span style="font-size:12px; color:var(--paper); font-weight:600;" id="chordSizeVal">1.35 ~ 3.00</span>
+          <span style="font-size:12px; color:var(--paper); font-weight:600;" id="chordSizeVal">1.25 ~ 2.90</span>
         </div>
-        <input type="range" id="chordSizeSlider" min="130" max="200" value="135" style="width:100%; accent-color:var(--pencil);">
+        <input type="range" id="chordSizeSlider" min="110" max="200" value="125" style="width:100%; accent-color:var(--pencil);">
         <div class="hint" style="margin-top:2px;">코드 글자는 오선 간격에 비례한 크기를 가집니다(실측 1.55~1.95). 이보다 작은 것(음표 기둥, 가사, 높은음자리표)은 제외됩니다. 코드를 놓치면 낮추고, 음표·가사가 섞이면 올리세요.</div>
       </div>
       <div style="margin-top:10px">
@@ -246,7 +246,11 @@ let addMode = false;
 let confThreshold = 35; // Tesseract 위치 검출 신뢰도 하한 — 한글 등 라틴 문자가 아닌 형태를 거르는 용도
 // 코드 글자 높이 / 오선 줄 간격 비율의 허용 하한. 실측 기반 기본값 1.35.
 // (상한은 하한 + 0.85로 함께 움직인다)
-let chordHRatioMin = 1.35;
+// 코드 글자 높이 / 오선 줄 간격 비율의 허용 하한.
+// 1.35 로 두면 글자를 작게 찍는 악보에서 진짜 코드가 하한에 걸려 대량 탈락한다
+// (실측: A, D/A 가 1.30~1.35 로 아슬아슬하게 미달).
+// 스윕(악보 10종): 1.35 -> 325/363 오탐16 / 1.25 -> 346 오탐17 / 1.15 -> 345 오탐28.
+let chordHRatioMin = 1.25;
 
 document.getElementById('confSlider').addEventListener('input', e=>{
   confThreshold = Number(e.target.value);
