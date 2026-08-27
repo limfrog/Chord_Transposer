@@ -446,8 +446,11 @@ function detectStaffSystems(ctx, w, h){
     for(let i = 0; i < nC; i++){
       const g = medianGap;
       const tol = Math.max(1.5, g * 0.30);
+      // 5줄 격자 자리(1~4번째) 중 "어디든" 3곳이 맞으면 인정한다.
+      // 연속 3줄을 요구하면, 가운데 줄이 빠진 단을 통째로 놓친다
+      // (실측: 1629/1648/1669/1710 처럼 3번째 자리가 비어 연속이 끊김).
       let hit = 0;
-      for(let k = 1; k <= 3; k++) if(near(centers[i] + k*g, tol)) hit++;
+      for(let k = 1; k <= 4; k++) if(near(centers[i] + k*g, tol)) hit++;
       if(hit < 3) continue;
       const yTop = centers[i], yBottom = yTop + 4*g;
       const overlaps = systems.some(s => yTop < s.yBottom + s.gap*0.5 && yBottom > s.yTop - s.gap*0.5);
@@ -525,7 +528,10 @@ function computeChordBand(staffSystems, index, ctx, width){
     // 캡을 적용했을 때 검색 영역이 너무 좁아지면(비정상적으로 빽빽한 레이아웃 등) 오히려
     // 원래(캡 없는) 범위를 그대로 쓴다 — "가끔 가사가 섞일 위험"이 "자기 자신의 코드를
     // 아예 못 찾는 것"보다 낫다.
-    if(bandBottom - capped >= sys.gap * 0.8){
+    // 기준을 0.8칸으로 두면 코드 한 줄도 안 들어가는 높이(실측 18px, 38px)를 "충분"으로
+    // 판단해 그 단의 코드를 통째로 놓쳤다. 코드 글자 높이가 1.35~3.0칸이므로 최소 2칸은
+    // 확보해야 한다. 실측 스윕: 0.8칸 274/289 / 1.5칸 279 / 2.0칸 282 (오탐은 6으로 동일).
+    if(bandBottom - capped >= sys.gap * 2.0){
       bandTop = capped;
     }
   }
