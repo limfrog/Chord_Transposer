@@ -474,10 +474,54 @@ function detectStaffSystems(ctx, w, h){
     }
   }
   // 위에서부터 훑으며 서로 겹치지 않게 채택 (같은 자리에서 여러 간격이 맞으면 작은 간격 우선)
+  // 줄 간격이 페이지 전체와 동떨어진 후보는 겹침 판정 "전에" 버린다.
+  // 예전에는 gap 중앙값 필터가 겹침 제거보다 뒤에 있어서, 가짜 오선 하나가
+  // (실측: 간격 181 = 정상 23의 8배) 진짜 오선 3개를 겹침으로 밀어내고
+  // 자신은 나중에 걸러져 그 3단이 통째로 사라졌다.
+  if(cand.length){
+    const cg = cand.map(c => c.gap).sort((a,b) => a-b);
+    const cmed = cg[Math.floor(cg.length/2)];
+    for(let i = cand.length - 1; i >= 0; i--){
+      if(cand[i].gap < cmed*0.6 || cand[i].gap > cmed*1.6) cand.splice(i, 1);
+    }
+  }
   cand.sort((a,b) => a.yTop - b.yTop || (b.hit - a.hit) || a.gap - b.gap);
   for(const c of cand){
     const overlaps = systems.some(s => c.yTop < s.yBottom + s.gap*0.5 && c.yBottom > s.yTop - s.gap*0.5);
     if(!overlaps) systems.push(c);
+  }
+
+  // 3줄 패스: 오선 줄이 절반 넘게 소실되어 3줄만 남은 단(격자 일치 최대 2곳).
+  // 이 경우 어떤 5줄 격자도 성립하지 않는다. 다만 "연속 3줄이 등간격"이고
+  // 그 간격이 페이지의 대표 간격과 같으면 오선으로 인정한다.
+  // (실측: 옅게 인쇄된 악보에서 5줄 중 2줄이 통째로 소실 -> 오선 3/4단만 검출)
+  {
+    let mg = 0;
+    if(systems.length){
+      const gs2 = systems.map(s => s.gap).sort((a,b) => a-b);
+      mg = gs2[Math.floor(gs2.length/2)];
+    }
+    // 오선이 없거나 간격이 의심스러우면 선 간격 최빈값을 쓴다
+    const bins2 = new Map();
+    for(let i = 1; i < nC; i++){
+      const d = Math.round(centers[i] - centers[i-1]);
+      if(d < 3 || d > 120) continue;
+      bins2.set(d, (bins2.get(d) || 0) + 1);
+    }
+    let modeGap = 0, bn = 0;
+    for(const [k, n] of bins2) if(n > bn){ bn = n; modeGap = k; }
+    if(!mg) mg = modeGap;
+    if(mg > 2){
+      const tol2 = Math.max(2, mg * 0.25);
+      for(let i = 0; i + 2 < nC; i++){
+        if(Math.abs((centers[i+1] - centers[i]) - mg) > tol2) continue;
+        if(Math.abs((centers[i+2] - centers[i+1]) - mg) > tol2) continue;
+        const yTop = centers[i], yBottom = yTop + 4*mg;
+        const ov = systems.some(s => yTop < s.yBottom + s.gap*0.5 && yBottom > s.yTop - s.gap*0.5);
+        if(!ov) systems.push({ yTop, gap: mg, yBottom });
+      }
+      systems.sort((x,y) => x.yTop - y.yTop);
+    }
   }
 
   // 보조 패스: 인쇄가 흐려 5줄 중 1줄이 아예 안 잡히는 단이 있다.
