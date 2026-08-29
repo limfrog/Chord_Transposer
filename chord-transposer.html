@@ -363,7 +363,9 @@ function binarize(ctx, w, h){
    구조적으로 걸러낸다. 이진화된 이미지에서 "가로로 길게 검은 행"을 오선 후보로 찾고,
    간격이 균등한 5개가 모이면 하나의 오선(5선)으로 인정한다.
    튜닝 상수는 주석 참고 — 실제 악보로 테스트하며 조정 가능. */
-const STAFF_ROW_BLACK_FRAC = 0.35; // 이 비율 이상 검게 채워진 행을 오선 후보로 봄
+// 손글씨/흐린 스캔 악보는 오선이 옅어 0.35 로는 위쪽 단을 통째로 놓친다(실측 4/6단).
+// 스윕(악보 11종): 0.35 -> 364/397 / 0.30 -> 373 / 0.25 -> 374 / 0.20 -> 367(과검출)
+const STAFF_ROW_BLACK_FRAC = 0.25; // 이 비율 이상 검게 채워진 행을 오선 후보로 봄
 const STAFF_BAND_ABOVE_GAPS = 5;   // 오선 맨 윗줄 기준, 위로 몇 배(줄 간격) 까지를 "코드 영역"으로 볼지.
                                    // 악보에 따라 코드를 오선에서 멀찍이 띄워 찍기도 한다(실측 3.2~4.2칸).
                                    // 4칸이면 그런 악보에서 코드를 하나도 못 잡는다. 5칸은 기존 악보에
@@ -374,7 +376,15 @@ const STAFF_BAND_MARGIN_GAPS = 0.35; // 오선 바로 위 여백. 실측상 자�
 
 function detectStaffSystems(ctx, w, h){
   const { data } = ctx.getImageData(0, 0, w, h);
-  const isBlack = (x, y) => data[(y*w + x)*4] === 0;
+  // 오선 줄이 아주 옅게 인쇄된 악보가 있다. Otsu 이진화는 이런 줄을 통째로 날려버린다
+  // (실측: 줄 밝기가 180~200 대인데 Otsu 임계값이 180이라 5줄 중 3줄 소실).
+  // 그래서 오선 "검출"에 한해서는 원래 회색값을 다시 보고, 더 관대한 기준으로 잉크를 판정한다.
+  // (코드 글자 검출은 기존 이진화 결과를 그대로 쓴다 — 여기만 완화한다)
+  const GRAY_INK = 190;
+  const isBlack = (x, y) => {
+    const i = (y*w + x)*4;
+    return data[i] === 0 || data[i] <= GRAY_INK;
+  };
 
   // 오선 줄은 "가로로 길고 세로로 얇다". 반면 16분음표 빔도 가로로 길지만 훨씬 두껍다.
   // 단순 행 투영으로는 둘이 구분되지 않아, 빔이 많은 단을 통째로 놓쳤다(실측: 6단 중 3단 실패).
@@ -414,7 +424,35 @@ function detectStaffSystems(ctx, w, h){
     }
   }
   if(cur) merged.push(cur);
-  const centers = merged.map(l => (l.start + l.end) / 2);
+  let centers = merged.map(l => (l.start + l.end) / 2);
+
+  // 흐리게 인쇄되어 빠진 오선 줄 보간:
+  // 이웃 간격이 정상 간격의 정확히 2배면 그 사이에 줄이 하나 사라진 것으로 보고 채워 넣는다.
+  // (실측: 간격이 24,44,24 로 나오는 악보에서 가운데 줄만 이진화 후 소실)
+  // 격자 조건 자체를 푸는 것보다 안전하다 — 완화는 기존 악보 점수를 380 -> 374 로 떨어뜨렸다.
+  if(centers.length >= 3){
+    const gaps = [];
+    for(let i = 1; i < centers.length; i++) gaps.push(centers[i] - centers[i-1]);
+    // 중앙값을 쓰면 단 사이의 큰 간격까지 섞여 왜곡된다(실측: 실제 24인데 중앙값 44).
+    // 오선 줄 간격은 페이지에서 가장 자주 나타나는 값이므로 최빈값을 쓴다.
+    const bins = new Map();
+    for(const g of gaps){
+      if(g < 3 || g > 120) continue;
+      const k = Math.round(g);
+      bins.set(k, (bins.get(k) || 0) + 1);
+    }
+    let medGap = 0, bestN = 0;
+    for(const [k, n] of bins) if(n > bestN){ bestN = n; medGap = k; }
+    if(medGap > 2){
+      const filled = [centers[0]];
+      for(let i = 1; i < centers.length; i++){
+        const d = centers[i] - centers[i-1];
+        if(Math.abs(d - medGap*2) <= medGap*0.25) filled.push(centers[i-1] + d/2);
+        filled.push(centers[i]);
+      }
+      centers = filled;
+    }
+  }
 
 
   // 오선 찾기: "정렬된 후보 중 연속한 5개"를 요구하면, 가사·이음줄이 만든 가짜 가로선이
@@ -995,8 +1033,13 @@ async function runOcr(){
       const grayCopy = document.createElement('canvas');
       grayCopy.width = cvW; grayCopy.height = cvH;
       grayCopy.getContext('2d').drawImage(c, 0, 0);
+      // 오선 검출은 "이진화 전" 회색 이미지에서 한다.
+      // 오선 줄이 옅게 인쇄된 악보는 Otsu 이진화가 줄을 통째로 날려버려
+      // 검출이 0개가 된다(실측: 이진화 전 4개 / 이진화 후 0개).
+      const grayCtx = grayCopy.getContext('2d');
+      const systems = detectStaffSystems(grayCtx, cvW, cvH);
       binarize(g, cvW, cvH);
-      return { canvas: c, ctx: g, gray: grayCopy, systems: detectStaffSystems(g, cvW, cvH) };
+      return { canvas: c, ctx: g, gray: grayCopy, systems };
     }
 
     // 잘못된 보정각은 오선 검출을 통째로 무너뜨리고, 그러면 필터가 약한 폴백 경로로 빠진다.
