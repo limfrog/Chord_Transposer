@@ -72,12 +72,25 @@
   #status{font-size:12px; color:var(--muted); margin-top:7px; min-height:16px;}
   /* chord list */
   #chordList{display:flex; flex-direction:column; gap:6px; max-height:320px; overflow-y:auto;}
-  .citem{display:flex; align-items:center; gap:8px; background:var(--panel2); border:1px solid var(--line); border-radius:7px; padding:6px 8px;}
+  .citem.warn{ background:rgba(220,120,20,.08); }
+.citem.warn::after{
+  content:'확인'; position:absolute; right:34px; top:50%; transform:translateY(-50%);
+  font-size:10px; font-weight:700; color:#b4650f; opacity:.85; pointer-events:none;
+}
+.sysHead{
+  font-size:11px; font-weight:700; letter-spacing:.04em;
+  color:var(--pencil); opacity:.75;
+  padding:10px 4px 4px; margin-top:2px;
+  border-bottom:1px solid rgba(0,0,0,.12);
+}
+.sysHead:first-child{ margin-top:0; padding-top:2px; }
+.citem{display:flex; align-items:center; gap:8px; background:var(--panel2); border:1px solid var(--line); border-radius:7px; padding:6px 8px; position:relative; cursor:pointer;}
   .citem.sel{border-color:var(--pencil);}
   .citem input[type=checkbox]{accent-color:var(--pencil); width:15px; height:15px; flex-shrink:0;}
   .citem input[type=text]{width:76px; padding:4px 6px; font-weight:600;}
   .citem .arrow{color:var(--muted); font-size:12px;}
   .citem .result{font-weight:700; color:var(--pencil); font-size:14px; min-width:52px;}
+  .citem.warn .del{margin-left:auto;}
   .citem .del{margin-left:auto; background:none; border:none; color:var(--muted); cursor:pointer; font-size:15px; padding:2px 5px;}
   .citem .del:hover{color:var(--pencil);}
   .empty{color:var(--muted); font-size:13px; text-align:center; padding:14px 0;}
@@ -1196,10 +1209,26 @@ async function runOcr(){
       //  0.99를 주는 과확신 성향이라 판별력이 없었다. 대신 크기·위치 필터로 걸러낸다.)
       // 회전 보정된 좌표계 → 원본 이미지 좌표계로 역회전 + 축소
       const orig = boxFromRotatedToOriginal(box.x0, box.y0, box.x1, box.y1, rotCx, rotCy, deskewAngle);
+      // 코드가 속한 단(오선) 번호와 그 단의 줄 간격을 함께 기록한다.
+      // - 단 번호: 목록을 줄별로 묶어 보여주기 위해
+      // - 줄 간격: 글자 크기를 박스 높이가 아니라 오선 기준으로 통일하기 위해
+      //   (박스 높이는 같은 악보 안에서도 최대 2배까지 차이나 크기가 들쭉날쭉했다)
+      let sysIdx = -1, sysGap = 0;
+      if(staffSystems.length){
+        const cy = (box.y0 + box.y1) / 2;
+        for(let s = 0; s < staffSystems.length; s++){
+          if(staffSystems[s].yTop > cy){ sysIdx = s; sysGap = staffSystems[s].gap; break; }
+        }
+        if(sysIdx < 0){
+          sysIdx = staffSystems.length - 1;
+          sysGap = staffSystems[sysIdx].gap;
+        }
+      }
       chords.push({
         id: nextId++,
         x0: orig.x0/scale, y0: orig.y0/scale, x1: orig.x1/scale, y1: orig.y1/scale,
-        text: norm(text), included: true
+        text: norm(text), included: true,
+        sysIdx, gap: sysGap/scale
       });
       found++;
     });
@@ -1324,6 +1353,13 @@ $('tabEdit').addEventListener('click', ()=>switchTab('edit'));
 $('tabResult').addEventListener('click', ()=>switchTab('result'));
 
 /* ==================== 렌더링: 검수 오버레이 ==================== */
+// 목록에서 코드를 고르면 악보의 해당 위치가 보이도록 스크롤한다.
+// 코드가 수십 개인 악보에서 "이게 어디 있는 코드지?" 를 찾는 수고를 없앤다.
+function scrollToChord(c){
+  const box = imgWrap.querySelector(`.cbox[data-id="${c.id}"]`);
+  if(box && box.scrollIntoView) box.scrollIntoView({ block:'center', inline:'center', behavior:'smooth' });
+}
+
 function renderOverlay(){
   imgWrap.querySelectorAll('.cbox').forEach(el=>el.remove());
   if(!img) return;
@@ -1331,6 +1367,7 @@ function renderOverlay(){
   for(const c of chords){
     const d = document.createElement('div');
     d.className = 'cbox' + (c.included?'':' off') + (c.id===selectedId?' sel':'');
+    d.dataset.id = c.id;
     d.style.left = (c.x0*sc-2)+'px';
     d.style.top = (c.y0*sc-2)+'px';
     d.style.width = ((c.x1-c.x0)*sc+4)+'px';
@@ -1349,16 +1386,52 @@ function renderOverlay(){
 window.addEventListener('resize', renderOverlay);
 
 /* ==================== 렌더링: 코드 목록 ==================== */
+// 검수할 때 먼저 봐야 할 코드를 골라준다.
+// 모델 확신도는 과확신이라 못 쓰고(음표 조각에도 0.99), 대신 표기 자체로 판단한다.
+// 실제 오답에서 반복 확인된 패턴만 넣었다: 한 글자로 끝나 접미사가 잘린 듯한 것,
+// 슬래시 베이스만 남은 것, 지나치게 긴 것.
+const COMMON_CHORDS = new Set([
+  'C','D','E','F','G','A','B',
+  'Cm','Dm','Em','Fm','Gm','Am','Bm',
+  'C7','D7','E7','F7','G7','A7','B7',
+  'Cm7','Dm7','Em7','Fm7','Gm7','Am7','Bm7'
+]);
+function looksSuspicious(t){
+  if(!t) return true;
+  if(t.startsWith('/')) return true;          // 루트가 잘려나감
+  if(t.length > 9) return true;               // 두 코드가 붙었을 가능성
+  if(/\d$/.test(t) && t.length <= 2) return true;  // 숫자만 남음
+  return false;
+}
+
 function renderList(){
   const list = $('chordList');
   const inc = chords.filter(c=>c.included).length;
   $('cnt').textContent = chords.length ? `(${inc}/${chords.length} 포함)` : '';
   if(!chords.length){ list.innerHTML = '<div class="empty">아직 인식된 코드가 없습니다.</div>'; return; }
   list.innerHTML = '';
-  const sorted = [...chords].sort((a,b)=> (a.y0-b.y0)||(a.x0-b.x0));
+  // 정렬은 "단 번호 -> 왼쪽에서 오른쪽" 순.
+  // y0 로만 정렬하면 같은 단인데도 코드마다 y0 가 10~15px 씩 달라서
+  // (G 는 낮고 G7 은 위첨자 때문에 높다) 좌우 순서가 뒤섞였다.
+  const sorted = [...chords].sort((a,b)=>{
+    const sa = (a.sysIdx === undefined || a.sysIdx < 0) ? Math.round(a.y0/50) : a.sysIdx;
+    const sb = (b.sysIdx === undefined || b.sysIdx < 0) ? Math.round(b.y0/50) : b.sysIdx;
+    return (sa - sb) || (a.x0 - b.x0);
+  });
+  let lastSys = null;
   for(const c of sorted){
+    // 단이 바뀌면 구분 머리글을 넣는다
+    const cs = (c.sysIdx === undefined || c.sysIdx < 0) ? Math.round(c.y0/50) : c.sysIdx;
+    if(cs !== lastSys){
+      lastSys = cs;
+      const hd = document.createElement('div');
+      hd.className = 'sysHead';
+      const n = (c.sysIdx === undefined || c.sysIdx < 0) ? '위치 미상' : (c.sysIdx + 1) + '번째 줄';
+      hd.textContent = n;
+      list.appendChild(hd);
+    }
     const row = document.createElement('div');
-    row.className = 'citem' + (c.id===selectedId?' sel':'');
+    row.className = 'citem' + (c.id===selectedId?' sel':'') + (looksSuspicious(c.text)?' warn':'');
     row.dataset.id = c.id;
     const to = c.text ? transposeChord(c.text, semitones, accPref) : '';
     row.innerHTML = `
@@ -1373,7 +1446,12 @@ function renderList(){
       renderOverlay();
       if(tab==='result') renderResult();
     });
-    row.querySelector('[type=text]').addEventListener('focus', ()=>{ selectedId=c.id; renderOverlay(); });
+    row.querySelector('[type=text]').addEventListener('focus', ()=>{ selectedId=c.id; renderOverlay(); scrollToChord(c); });
+    // 행의 빈 곳을 눌러도 해당 코드 위치로 이동한다(검수 중 위치 찾기가 잦다)
+    row.addEventListener('click', e=>{
+      if(e.target.closest('input,button')) return;
+      selectedId = c.id; renderOverlay(); scrollToChord(c);
+    });
     row.querySelector('.del').addEventListener('click', ()=>{
       chords = chords.filter(x=>x.id!==c.id);
       if(selectedId===c.id) selectedId=null;
@@ -1413,7 +1491,11 @@ function renderResult(){
     if(!c.included || !c.text) continue;
     const to = transposeChord(c.text, semitones, accPref);
     const h = c.y1 - c.y0;
-    const fontSize = Math.min(h/0.72, h*1.5);
+    // 글자 크기는 "그 단의 오선 줄 간격"으로 정한다.
+    // 박스 높이로 정하면 G(획이 낮음) 와 G7(위첨자 있음) 의 높이가 달라
+    // 같은 악보 안에서 글자 크기가 최대 2배까지 널뛰었다.
+    // 오선 간격은 한 단 안에서 일정하므로 크기가 고르게 나온다.
+    const fontSize = c.gap ? c.gap * 1.75 : Math.min(h/0.72, h*1.5);
     ctx.font = `bold ${fontSize}px "Helvetica Neue", Arial, sans-serif`;
     const newW = ctx.measureText(to).width;
     const clearW = Math.max(c.x1-c.x0, newW);
