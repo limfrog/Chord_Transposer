@@ -22,28 +22,38 @@
     /* 좌우를 각각 따로 스크롤한다. 예전엔 페이지 전체가 함께 움직여서
        악보 아래쪽을 보려고 내리면 오른쪽 조작 패널이 화면 밖으로 사라졌다. */
     height:calc(100vh - 132px); min-height:420px;}
-  .layout > .stageCol{height:100%; overflow-y:auto; overflow-x:hidden; padding-right:4px;}
+  /* 왼쪽 열은 스크롤하지 않는다. 대신 안쪽 stage-body 만 스크롤해서
+     탭(① 인식·검수 / ② 결과 미리보기)이 항상 화면에 붙어 있게 한다. */
+  .layout > .stageCol{height:100%; overflow:hidden; display:flex; flex-direction:column;}
   .layout > .side{height:100%; overflow-y:auto; padding-right:4px;}
+
+  /* ---------- image area ---------- */
+  .stage{background:var(--panel); border:1px solid var(--line); border-radius:10px; overflow:hidden; display:flex; flex-direction:column; height:100%; min-height:0;}
+  .tabs{display:flex; border-bottom:1px solid var(--line); flex-shrink:0;}
+  .tabs button{flex:1; background:none; border:none; color:var(--muted); padding:11px 0; font-size:13.5px; cursor:pointer; border-bottom:2px solid transparent;}
+  .tabs button.active{color:var(--text); border-bottom-color:var(--pencil); font-weight:600;}
+  .tabs button:focus-visible{outline:2px solid var(--pencil); outline-offset:-2px;}
+  .stage-body{padding:14px; min-height:0; flex:1 1 auto; overflow:auto;
+    display:flex; align-items:flex-start; justify-content:center;}
+  /* 악보를 아직 안 올렸을 때는 안내를 세로 가운데에 둔다 */
+  .stage-body.empty{align-items:center;}
   @media(max-width:900px){
     /* 좁은 화면에선 위아래로 쌓이므로 높이 제한을 풀고 페이지 스크롤을 쓴다 */
     .layout{grid-template-columns:1fr; height:auto; min-height:0;}
     .layout > .stageCol, .layout > .side{height:auto; overflow:visible;}
+    /* 좁은 화면에선 탭 고정도 풀어 페이지 스크롤에 맡긴다 */
+    .stage{height:auto;}
+    .stage-body{overflow:visible; min-height:340px;}
   }
-
-  /* ---------- image area ---------- */
-  .stage{background:var(--panel); border:1px solid var(--line); border-radius:10px; overflow:hidden;}
-  .tabs{display:flex; border-bottom:1px solid var(--line);}
-  .tabs button{flex:1; background:none; border:none; color:var(--muted); padding:11px 0; font-size:13.5px; cursor:pointer; border-bottom:2px solid transparent;}
-  .tabs button.active{color:var(--text); border-bottom-color:var(--pencil); font-weight:600;}
-  .tabs button:focus-visible{outline:2px solid var(--pencil); outline-offset:-2px;}
-  .stage-body{padding:14px; min-height:340px; display:flex; align-items:center; justify-content:center;}
   .drop{border:1.5px dashed var(--line); border-radius:8px; width:100%; min-height:320px; display:flex; flex-direction:column; gap:10px; align-items:center; justify-content:center; color:var(--muted); cursor:pointer; text-align:center; padding:20px;}
   .drop.hover{border-color:var(--pencil); background:var(--pencil-soft);}
   /* 이미 악보가 열린 상태에서 새 파일을 끌어올 때의 표시 */
   .stageCol.dropOver{outline:3px dashed var(--pencil); outline-offset:-4px; border-radius:10px;}
-  .stageCol.dropOver::before{content:'놓으면 새 악보로 바뀝니다'; position:sticky; top:0; z-index:30;
-    display:block; text-align:center; background:var(--pencil); color:#fff;
-    font-size:12px; font-weight:700; padding:5px; border-radius:6px; margin-bottom:6px;}
+  .stageCol.dropOver::before{content:'놓으면 새 악보로 바뀝니다'; position:absolute; left:50%; top:8px;
+    transform:translateX(-50%); z-index:30;
+    background:var(--pencil); color:#fff; white-space:nowrap;
+    font-size:12px; font-weight:700; padding:5px 12px; border-radius:6px;}
+  .layout > .stageCol{position:relative;}
   .drop .big{font-size:15px; color:var(--text);}
   .drop kbd{background:var(--panel2); border:1px solid var(--line); border-radius:4px; padding:1px 6px; font-size:11px;}
   #imgWrap{position:relative; width:100%; display:none; line-height:0;}
@@ -126,7 +136,7 @@
       <button id="tabEdit" class="active">① 인식 · 검수</button>
       <button id="tabResult">② 결과 미리보기</button>
     </div>
-    <div class="stage-body">
+    <div class="stage-body empty">
       <div class="drop" id="drop" tabindex="0">
         <div class="big">악보 이미지를 여기에 놓거나 클릭해서 선택</div>
         <div>PNG · JPG 지원 &nbsp;|&nbsp; <kbd>Ctrl</kbd>+<kbd>V</kbd> 붙여넣기 가능</div>
@@ -380,6 +390,7 @@ function loadFile(file){
     setSemi(0);
     resetControls();
     drop.style.display='none'; imgWrap.style.display='block';
+    document.querySelector('.stage-body').classList.remove('empty');
     $('btnOcr').disabled=false; $('btnAdd').disabled=false; $('btnSave').disabled=false; $('btnNew').disabled=false;
     setStatus(`이미지 로드 완료 (${imgW}×${imgH}). "코드 인식 실행"을 눌러주세요.`);
     switchTab('edit'); renderAll();
