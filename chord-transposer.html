@@ -479,8 +479,16 @@ function detectStaffSystems(ctx, w, h){
   // (실측: 간격 181 = 정상 23의 8배) 진짜 오선 3개를 겹침으로 밀어내고
   // 자신은 나중에 걸러져 그 3단이 통째로 사라졌다.
   if(cand.length){
-    const cg = cand.map(c => c.gap).sort((a,b) => a-b);
-    const cmed = cg[Math.floor(cg.length/2)];
+    // 중앙값을 쓰면 가짜 격자가 많은 악보에서 기준 자체가 오염된다
+    // (실측: 진짜 오선 gap 28~29 가 4개인데 가짜 114~196 이 8개라 중앙값 175 -> 진짜가 전멸).
+    // 오선 줄 간격은 페이지에서 가장 자주 나오는 값이므로 최빈값을 쓴다.
+    const gbin = new Map();
+    for(const c of cand){
+      const k = Math.round(c.gap);
+      gbin.set(k, (gbin.get(k) || 0) + 1);
+    }
+    let cmed = 0, gbest = 0;
+    for(const [k, n] of gbin) if(n > gbest || (n === gbest && k < cmed)){ gbest = n; cmed = k; }
     for(let i = cand.length - 1; i >= 0; i--){
       if(cand[i].gap < cmed*0.6 || cand[i].gap > cmed*1.6) cand.splice(i, 1);
     }
@@ -849,7 +857,11 @@ function detectChordCandidates(ctx, cvWidth, staffSystems){
     const { bandTop, bandBottom } = computeChordBand(staffSystems, i, ctx, cvWidth);
     const comps = findInkComponents(ctx, 0, bandTop, cvWidth, bandBottom - bandTop);
     const gapThreshold = Math.max(4, sys.gap * 1.0);
-    const maxGroupWidth = sys.gap * 8; // 코드 하나가 이 이상 넓어지면 보통 다른 것과 잘못 이어붙은 것
+    // 코드 하나가 이 이상 넓어지면 보통 다른 것과 잘못 이어붙은 것.
+    // 8배로 두면 Bb(add2) 처럼 긴 코드의 닫는 괄호가 잘려 B(add2 로 읽힌다(실측).
+    // 스윕(악보 29종): 8배 888/오탐77 / **9배 889/오탐70** / 10배 886/69 / 12배 887/69
+    // 10배 이상은 서로 다른 코드가 합쳐지는 손해가 더 커진다.
+    const maxGroupWidth = sys.gap * 9;
     const words = groupComponentsIntoWords(comps, gapThreshold, maxGroupWidth, sys.gap);
     // 1.위치(오선 위 영역) -> 2.글자 크기 -> 3.영어(라틴)스러움 -> 4.이후 모델 인식 단계로
     const sized = words.filter(w => {
