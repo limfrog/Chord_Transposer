@@ -232,6 +232,25 @@ function isChordLike(raw){
   if(t.length < 1 || t.length > 10) return false;
   return CHORD_RE.test(t);
 }
+// 악보 전체가 올림(#) 계열인지 내림(b) 계열인지 판단한다.
+// 자동 모드에서 임시표 없는 코드(G, C 등)를 옮길 때 어느 표를 쓸지 결정한다.
+// 예전에는 AUTO 표(Db,Eb,Ab,Bb 위주)를 무조건 썼기 때문에
+// #가 가득한 악보에서도 갑자기 Bb 같은 표기가 튀어나왔다.
+function sheetAccidentalBias(){
+  let sharp = 0, flat = 0;
+  for(const c of chords){
+    if(!c.included || !c.text) continue;
+    const mm = CHORD_RE.exec(norm(c.text));
+    if(!mm) continue;
+    const g = mm.groups;
+    if(g.acc === '#') sharp++; else if(g.acc === 'b') flat++;
+    if(g.bassAcc === '#') sharp++; else if(g.bassAcc === 'b') flat++;
+  }
+  if(sharp > flat) return 'sharp';
+  if(flat > sharp) return 'flat';
+  return null;   // 근거가 없으면 기존 AUTO 표를 쓴다
+}
+
 function transposeChord(raw, semis, pref){
   const t = norm(raw);
   const m = CHORD_RE.exec(t);
@@ -242,11 +261,14 @@ function transposeChord(raw, semis, pref){
   // 자동 모드에서는 "원본이 쓴 임시표"를 음마다 따라간다.
   // 원본이 C# 라고 적었으면 올림 계열로, Db 라고 적었으면 내림 계열로 옮긴다.
   // (자동 표를 그대로 쓰면 C# 이 Db 로 바뀌어 원곡 표기와 어긋난다.)
+  // 우선순위: 사용자 지정 > 그 코드가 원래 쓰던 임시표 > 악보 전체 성향 > AUTO 표
+  const bias = pref==='auto' ? sheetAccidentalBias() : null;
+  const fallback = bias==='sharp' ? SHARP : bias==='flat' ? FLAT : AUTO;
   const pick = acc => pref==='sharp' ? SHARP
                     : pref==='flat'  ? FLAT
                     : acc==='#' ? SHARP
                     : acc==='b' ? FLAT
-                    : AUTO;
+                    : fallback;
   const shift = (n, acc) => pick(acc)[(n + semis + 120) % 12];
   if(g.root){
     const rootPc = NOTE_PC[g.root] + (g.acc==='#'?1:g.acc==='b'?-1:0);
@@ -280,6 +302,25 @@ let confThreshold = 35; // Tesseract 위치 검출 신뢰도 하한 — 한글 �
 // (실측: A, D/A 가 1.30~1.35 로 아슬아슬하게 미달).
 // 스윕(악보 10종): 1.35 -> 325/363 오탐16 / 1.25 -> 346 오탐17 / 1.15 -> 345 오탐28.
 let chordHRatioMin = 1.25;
+
+// 새 악보를 열 때 조작값을 공장 초기값으로 되돌린다.
+// 이전 악보에서 맞춰둔 슬라이더가 남아 있으면 새 악보 인식이 엉뚱하게 나온다.
+function resetControls(){
+  confThreshold = 35;
+  document.getElementById('confSlider').value = 35;
+  document.getElementById('confVal').textContent = 35;
+
+  chordHRatioMin = 1.25;
+  document.getElementById('chordSizeSlider').value = 125;
+  document.getElementById('chordSizeVal').textContent =
+    chordHRatioMin.toFixed(2) + ' ~ ' + (chordHRatioMin + 1.65).toFixed(2);
+
+  // 임시표 우선 설정도 '자동'으로
+  accPref = 'auto';
+  document.querySelectorAll('[data-pref]').forEach(b=>{
+    b.classList.toggle('on', b.dataset.pref === 'auto');
+  });
+}
 
 document.getElementById('confSlider').addEventListener('input', e=>{
   confThreshold = Number(e.target.value);
@@ -337,6 +378,7 @@ function loadFile(file){
     // 새 악보를 열 때는 이조량도 0으로 되돌린다.
     // (이전 악보의 +3 이 남아 있으면 방금 연 악보가 이미 조옮김된 것처럼 보인다)
     setSemi(0);
+    resetControls();
     drop.style.display='none'; imgWrap.style.display='block';
     $('btnOcr').disabled=false; $('btnAdd').disabled=false; $('btnSave').disabled=false; $('btnNew').disabled=false;
     setStatus(`이미지 로드 완료 (${imgW}×${imgH}). "코드 인식 실행"을 눌러주세요.`);
