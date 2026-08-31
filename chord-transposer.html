@@ -18,8 +18,17 @@
   header h1{font-family:Georgia,"Times New Roman",serif; font-size:22px; font-weight:700; letter-spacing:.5px;}
   header h1 .flat{color:var(--pencil); font-style:italic;}
   header .sub{color:var(--muted); font-size:12.5px;}
-  .layout{display:grid; grid-template-columns:1fr 340px; gap:16px; padding:16px 22px; align-items:start;}
-  @media(max-width:900px){ .layout{grid-template-columns:1fr;} }
+  .layout{display:grid; grid-template-columns:1fr 340px; gap:16px; padding:16px 22px; align-items:start;
+    /* 좌우를 각각 따로 스크롤한다. 예전엔 페이지 전체가 함께 움직여서
+       악보 아래쪽을 보려고 내리면 오른쪽 조작 패널이 화면 밖으로 사라졌다. */
+    height:calc(100vh - 132px); min-height:420px;}
+  .layout > .stageCol{height:100%; overflow-y:auto; overflow-x:hidden; padding-right:4px;}
+  .layout > .side{height:100%; overflow-y:auto; padding-right:4px;}
+  @media(max-width:900px){
+    /* 좁은 화면에선 위아래로 쌓이므로 높이 제한을 풀고 페이지 스크롤을 쓴다 */
+    .layout{grid-template-columns:1fr; height:auto; min-height:0;}
+    .layout > .stageCol, .layout > .side{height:auto; overflow:visible;}
+  }
 
   /* ---------- image area ---------- */
   .stage{background:var(--panel); border:1px solid var(--line); border-radius:10px; overflow:hidden;}
@@ -30,6 +39,11 @@
   .stage-body{padding:14px; min-height:340px; display:flex; align-items:center; justify-content:center;}
   .drop{border:1.5px dashed var(--line); border-radius:8px; width:100%; min-height:320px; display:flex; flex-direction:column; gap:10px; align-items:center; justify-content:center; color:var(--muted); cursor:pointer; text-align:center; padding:20px;}
   .drop.hover{border-color:var(--pencil); background:var(--pencil-soft);}
+  /* 이미 악보가 열린 상태에서 새 파일을 끌어올 때의 표시 */
+  .stageCol.dropOver{outline:3px dashed var(--pencil); outline-offset:-4px; border-radius:10px;}
+  .stageCol.dropOver::before{content:'놓으면 새 악보로 바뀝니다'; position:sticky; top:0; z-index:30;
+    display:block; text-align:center; background:var(--pencil); color:#fff;
+    font-size:12px; font-weight:700; padding:5px; border-radius:6px; margin-bottom:6px;}
   .drop .big{font-size:15px; color:var(--text);}
   .drop kbd{background:var(--panel2); border:1px solid var(--line); border-radius:4px; padding:1px 6px; font-size:11px;}
   #imgWrap{position:relative; width:100%; display:none; line-height:0;}
@@ -38,10 +52,6 @@
   .cbox{position:absolute; border:2px solid var(--pencil); border-radius:3px; cursor:pointer; background:transparent;}
   .cbox.off{border-color:#6b7180; border-style:dashed; opacity:.55;}
   .cbox.sel{box-shadow:0 0 0 3px rgba(226,87,74,.35);}
-  /* 확인이 필요한 코드는 악보 위에서도 눈에 띄게 한다(목록만 보면 위치를 못 찾는다) */
-  .cbox.warn{border-color:#e08a1e; border-width:3px;}
-  .cbox.warn .tag{background:#c9740f;}
-  .cbox.warn .tag::before{content:'⚠ '; }
   .cbox .tag{position:absolute; left:-2px; top:-20px; background:var(--pencil); color:#fff; font-size:11px; font-weight:700; padding:1px 6px; border-radius:3px; white-space:nowrap; line-height:16px; cursor:text;}
   .cbox .tag:hover{filter:brightness(1.15);}
   /* 악보 위에서 바로 고치는 입력창 */
@@ -80,13 +90,8 @@
   #progress i{display:block; height:100%; width:0; background:var(--pencil); transition:width .2s;}
   #status{font-size:12px; color:var(--muted); margin-top:7px; min-height:16px;}
   /* chord list */
-  #chordList{display:flex; flex-direction:column; gap:6px; max-height:320px; overflow-y:auto;}
-  .citem.warn{ background:rgba(220,120,20,.08); }
-.citem.warn::after{
-  content:'확인'; position:absolute; right:34px; top:50%; transform:translateY(-50%);
-  font-size:10px; font-weight:700; color:#b4650f; opacity:.85; pointer-events:none;
-}
-.sysHead{
+  #chordList{display:flex; flex-direction:column; gap:6px;}
+  .sysHead{
   font-size:11px; font-weight:700; letter-spacing:.04em;
   color:var(--pencil); opacity:.75;
   padding:10px 4px 4px; margin-top:2px;
@@ -99,7 +104,6 @@
   .citem input[type=text]{width:76px; padding:4px 6px; font-weight:600;}
   .citem .arrow{color:var(--muted); font-size:12px;}
   .citem .result{font-weight:700; color:var(--pencil); font-size:14px; min-width:52px;}
-  .citem.warn .del{margin-left:auto;}
   .citem .del{margin-left:auto; background:none; border:none; color:var(--muted); cursor:pointer; font-size:15px; padding:2px 5px;}
   .citem .del:hover{color:var(--pencil);}
   .empty{color:var(--muted); font-size:13px; text-align:center; padding:14px 0;}
@@ -116,6 +120,7 @@
 
 <div class="layout">
   <!-- ================= 이미지 영역 ================= -->
+  <div class="stageCol">
   <div class="stage">
     <div class="tabs">
       <button id="tabEdit" class="active">① 인식 · 검수</button>
@@ -133,6 +138,7 @@
       <canvas id="outCanvas"></canvas>
     </div>
   </div>
+  </div>
 
   <!-- ================= 사이드 패널 ================= -->
   <div class="side">
@@ -141,6 +147,7 @@
       <div class="row">
         <button class="btn primary grow" id="btnOcr" disabled>코드 인식 실행</button>
         <button class="btn" id="btnAdd" disabled title="인식 못한 코드를 직접 드래그로 추가">+ 직접 추가</button>
+        <button class="btn" id="btnNew" disabled title="다른 악보를 불러옵니다 (현재 작업은 사라집니다)">새 악보</button>
       </div>
       <div style="margin-top:10px">
         <div class="row" style="justify-content:space-between; margin-bottom:4px;">
@@ -327,8 +334,11 @@ function loadFile(file){
     if(lastDebugUrl){ URL.revokeObjectURL(lastDebugUrl); lastDebugUrl = null; }
     $('debugImg').style.display='none'; $('debugImg').removeAttribute('src');
     $('debugLink').style.display='none'; $('debugLink').textContent='전처리 이미지 확인 (위치 인식 단계)';
+    // 새 악보를 열 때는 이조량도 0으로 되돌린다.
+    // (이전 악보의 +3 이 남아 있으면 방금 연 악보가 이미 조옮김된 것처럼 보인다)
+    setSemi(0);
     drop.style.display='none'; imgWrap.style.display='block';
-    $('btnOcr').disabled=false; $('btnAdd').disabled=false; $('btnSave').disabled=false;
+    $('btnOcr').disabled=false; $('btnAdd').disabled=false; $('btnSave').disabled=false; $('btnNew').disabled=false;
     setStatus(`이미지 로드 완료 (${imgW}×${imgH}). "코드 인식 실행"을 눌러주세요.`);
     switchTab('edit'); renderAll();
   };
@@ -342,6 +352,34 @@ drop.addEventListener('keydown', e=>{ if(e.key==='Enter'||e.key===' ') drop.clic
 ['dragover','dragenter'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.add('hover');}));
 ['dragleave','drop'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.remove('hover');}));
 drop.addEventListener('drop', e=>loadFile(e.dataTransfer.files[0]));
+
+// 악보가 이미 열려 있어도 창 아무 곳에나 이미지를 떨어뜨리면 새 악보로 교체한다.
+// (예전에는 드롭 영역이 숨겨져 있어서 새 악보를 열려면 새로고침해야 했다)
+const stageCol = document.querySelector('.stageCol');
+['dragover','dragenter'].forEach(ev=>document.addEventListener(ev, e=>{
+  if(!e.dataTransfer || !Array.from(e.dataTransfer.types||[]).includes('Files')) return;
+  e.preventDefault();
+  if(img) stageCol.classList.add('dropOver');
+}));
+['dragleave','dragend'].forEach(ev=>document.addEventListener(ev, e=>{
+  if(e.relatedTarget) return;      // 자식 요소 사이 이동은 무시
+  stageCol.classList.remove('dropOver');
+}));
+document.addEventListener('drop', e=>{
+  const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+  if(!f) return;
+  e.preventDefault();
+  stageCol.classList.remove('dropOver');
+  if(f.type.startsWith('image/')) loadFile(f);
+});
+
+// "새 악보" 버튼: 파일 선택창을 열어 다른 악보로 바꾼다.
+$('btnNew').addEventListener('click', ()=>{
+  if(chords.length && !confirm('현재 악보의 코드 편집 내용이 사라집니다. 새 악보를 여시겠습니까?')) return;
+  const inp=document.createElement('input'); inp.type='file'; inp.accept='image/*';
+  inp.onchange=()=>{ if(inp.files[0]) loadFile(inp.files[0]); };
+  inp.click();
+});
 window.addEventListener('paste', e=>{
   for(const it of e.clipboardData.items){
     if(it.type.startsWith('image/')){ loadFile(it.getAsFile()); break; }
@@ -1422,7 +1460,6 @@ function renderOverlay(){
     d.style.width = ((c.x1-c.x0)*sc+4)+'px';
     d.style.height = ((c.y1-c.y0)*sc+4)+'px';
     const to = c.text ? transposeChord(c.text, semitones, accPref) : '?';
-    if(looksSuspicious(c.text)) d.classList.add('warn');
     d.innerHTML = `<span class="tag">${escapeHtml(c.text||'?')} → ${escapeHtml(to)}</span>`;
     d.title = '박스 클릭: 포함/제외 · 라벨 클릭: 코드 수정';
 
@@ -1444,30 +1481,6 @@ function renderOverlay(){
 window.addEventListener('resize', renderOverlay);
 
 /* ==================== 렌더링: 코드 목록 ==================== */
-// 검수할 때 먼저 봐야 할 코드를 골라준다.
-// !! 한계: 실측 결과 실제 오답 94개 중 8개(9%)만 잡는다.
-//    나머지는 G, E, D7 처럼 "문법상 완전히 정상인 다른 코드"로 잘못 읽힌 것이라
-//    표기만 봐서는 구분이 불가능하다. 이 표시는 "확실히 이상한 것"만 걸러줄 뿐,
-//    표시가 없다고 맞다는 뜻은 아니다.
-// 모델 확신도는 과확신이라 못 쓰고(음표 조각에도 0.99), 대신 표기 자체로 판단한다.
-// 실제 오답에서 반복 확인된 패턴만 넣었다: 한 글자로 끝나 접미사가 잘린 듯한 것,
-// 슬래시 베이스만 남은 것, 지나치게 긴 것.
-const COMMON_CHORDS = new Set([
-  'C','D','E','F','G','A','B',
-  'Cm','Dm','Em','Fm','Gm','Am','Bm',
-  'C7','D7','E7','F7','G7','A7','B7',
-  'Cm7','Dm7','Em7','Fm7','Gm7','Am7','Bm7'
-]);
-function looksSuspicious(t){
-  if(!t) return true;
-  if(t.startsWith('/')) return true;   // 루트가 잘려나감 (예: /E)
-  if(t.length > 12) return true;       // 두 코드가 붙었을 가능성 (Bb(add2)/C 가 10자라 여유를 둔다)
-  // 루트 뒤에 알 수 없는 잔여물이 붙은 경우 (예: Fs, Ds4D, Co)
-  // D7, C2, Am7 같은 정상 표기를 잡지 않도록 문법으로 판정한다.
-  if(!CHORD_RE.test(norm(t))) return true;
-  return false;
-}
-
 function renderList(){
   const list = $('chordList');
   const inc = chords.filter(c=>c.included).length;
@@ -1495,7 +1508,7 @@ function renderList(){
       list.appendChild(hd);
     }
     const row = document.createElement('div');
-    row.className = 'citem' + (c.id===selectedId?' sel':'') + (looksSuspicious(c.text)?' warn':'');
+    row.className = 'citem' + (c.id===selectedId?' sel':'');
     row.dataset.id = c.id;
     const to = c.text ? transposeChord(c.text, semitones, accPref) : '';
     row.innerHTML = `
@@ -1551,6 +1564,16 @@ function renderResult(){
   outCanvas.width = imgW; outCanvas.height = imgH;
   const ctx = outCanvas.getContext('2d');
   ctx.drawImage(img, 0, 0);
+
+  // 이 악보의 "대문자 한 글자 높이"를 추정한다.
+  // G, C, D 처럼 위첨자가 없는 단순한 코드(가로가 세로보다 짧은 것)의 높이가
+  // 곧 대문자 높이다. 이걸 중앙값으로 잡으면 그 악보 고유의 글자 크기가 나온다.
+  // (오선 간격 대비 1.60~2.48배로 악보마다 달라서 고정 배율은 맞지 않았다)
+  let capH = 0;
+  const simple = chords.filter(c => c.text && (c.x1-c.x0) < (c.y1-c.y0))
+                       .map(c => c.y1 - c.y0).sort((a,b) => a-b);
+  if(simple.length) capH = simple[Math.floor(simple.length/2)];
+
   for(const c of chords){
     if(!c.included || !c.text) continue;
     const to = transposeChord(c.text, semitones, accPref);
@@ -1559,7 +1582,12 @@ function renderResult(){
     // 박스 높이로 정하면 G(획이 낮음) 와 G7(위첨자 있음) 의 높이가 달라
     // 같은 악보 안에서 글자 크기가 최대 2배까지 널뛰었다.
     // 오선 간격은 한 단 안에서 일정하므로 크기가 고르게 나온다.
-    const fontSize = c.gap ? c.gap * 1.75 : Math.min(h/0.72, h*1.5);
+    // 글자 크기는 악보 전체에서 하나로 통일한다.
+    // 박스 높이로 정하면 G(획이 낮음)와 G7(위첨자 있음)의 높이가 달라
+    // 같은 악보 안에서 크기가 2배까지 널뛰었다(실측 14.2~29.1px).
+    // 대문자 높이(capH)를 폰트 크기로 환산: Arial 대문자는 폰트의 약 0.72배.
+    const fontSize = capH ? capH / 0.72
+                          : (c.gap ? c.gap * 2.7 : Math.min(h/0.72, h*1.5));
     ctx.font = `bold ${fontSize}px "Helvetica Neue", Arial, sans-serif`;
     const newW = ctx.measureText(to).width;
     const clearW = Math.max(c.x1-c.x0, newW);
