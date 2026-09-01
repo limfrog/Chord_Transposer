@@ -1252,13 +1252,24 @@ async function recognizeBoxesWithModel(srcImage, srcW, srcH, boxes){
   for(const pf of RETRY_PADS){
     alts.push(await readPass(session, srcImage, srcW, srcH, subBoxes, pf));
   }
+  // 이 악보가 실제로 쓰는 코드 어휘. 악보 하나는 보통 10~20종만 반복하므로,
+  // 재시도 후보 중 "이미 두 번 이상 확실히 읽힌 코드"가 있으면 그쪽이 맞을 확률이 높다.
+  const vocab = new Map();
+  for(const t of base.texts) if(isChordLike(t)) vocab.set(t, (vocab.get(t) || 0) + 1);
+
   // 재시도 결과 중 문법을 통과하는 것들에서 최다 득표를 고른다
   for(let k = 0; k < bad.length; k++){
-    const cnt = new Map();
+    let cands = [];
     for(const a of alts){
       const t = a.texts[k];
-      if(isChordLike(t)) cnt.set(t, (cnt.get(t) || 0) + 1);
+      if(isChordLike(t)) cands.push(t);
     }
+    if(!cands.length) continue;
+    // 악보 어휘에 이미 있는 후보가 있으면 그것만 놓고 고른다
+    const seen = cands.filter(t => (vocab.get(t) || 0) >= 2);
+    if(seen.length) cands = seen;
+    const cnt = new Map();
+    for(const t of cands) cnt.set(t, (cnt.get(t) || 0) + 1);
     if(!cnt.size) continue;
     let bestT = null, bestN = 0;
     for(const [t, n] of cnt) if(n > bestN){ bestN = n; bestT = t; }
