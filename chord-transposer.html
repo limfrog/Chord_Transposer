@@ -6,6 +6,7 @@
 <title>코드 이조기 — 악보 이미지 코드 트랜스포즈</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/tesseract.js/5.1.1/tesseract.min.js" defer></script>
 <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.27.0/dist/ort.min.js" defer></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js" defer></script>
 <style>
   :root{
     --bg:#171a21; --panel:#20242e; --panel2:#262b37; --line:#333a4b;
@@ -138,7 +139,7 @@
     <div class="stage-body empty">
       <div class="drop" id="drop" tabindex="0">
         <div class="big">악보 이미지를 여기에 놓거나 클릭해서 선택</div>
-        <div>PNG · JPG 지원 &nbsp;|&nbsp; <kbd>Ctrl</kbd>+<kbd>V</kbd> 붙여넣기 가능</div>
+        <div>PNG · JPG · PDF 지원 &nbsp;|&nbsp; <kbd>Ctrl</kbd>+<kbd>V</kbd> 붙여넣기 가능</div>
       </div>
       <div id="imgWrap">
         <img id="srcImg" alt="원본 악보">
@@ -372,8 +373,44 @@ const drop=$('drop'), imgWrap=$('imgWrap'), srcImg=$('srcImg'), outCanvas=$('out
 const statusEl=$('status'), progWrap=$('progress'), progBar=progWrap.querySelector('i');
 
 /* ==================== 이미지 로드 ==================== */
+// PDF 는 그림 파일이 아니라 문서라서 바로 <img> 에 넣을 수 없다.
+// PDF.js 로 첫 페이지를 캔버스에 그려 이미지로 바꾼 뒤 기존 경로에 넘긴다.
+// 해상도는 인식에 충분하도록 넉넉히 잡되(2.5배), 너무 큰 페이지는 상한을 둔다.
+async function loadPdf(file){
+  if(!window.pdfjsLib){ setStatus('PDF 라이브러리를 불러오지 못했습니다 (인터넷 연결 확인).'); return; }
+  try{
+    setStatus('PDF를 이미지로 변환하는 중…');
+    pdfjsLib.GlobalWorkerOptions.workerSrc =
+      'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+    const buf = await file.arrayBuffer();
+    const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
+    if(pdf.numPages > 1){
+      setStatus(`PDF ${pdf.numPages}쪽 중 1쪽만 불러옵니다.`);
+    }
+    const page = await pdf.getPage(1);
+    let scale = 2.5;
+    const base = page.getViewport({ scale: 1 });
+    const longest = Math.max(base.width, base.height);
+    if(longest * scale > 3500) scale = 3500 / longest;   // 과도한 메모리 사용 방지
+    const vp = page.getViewport({ scale });
+    const cv = document.createElement('canvas');
+    cv.width = Math.round(vp.width); cv.height = Math.round(vp.height);
+    const cctx = cv.getContext('2d');
+    cctx.fillStyle = '#fff'; cctx.fillRect(0, 0, cv.width, cv.height);
+    await page.render({ canvasContext: cctx, viewport: vp }).promise;
+    cv.toBlob(b=>{
+      if(!b){ setStatus('PDF 변환에 실패했습니다.'); return; }
+      loadFile(new File([b], (file.name||'score').replace(/\.pdf$/i,'') + '.png', { type:'image/png' }));
+    }, 'image/png');
+  }catch(err){
+    setStatus('PDF를 읽지 못했습니다: ' + (err && err.message ? err.message : err));
+  }
+}
+
 function loadFile(file){
-  if(!file || !file.type.startsWith('image/')){ setStatus('이미지 파일이 아닙니다.'); return; }
+  if(!file){ setStatus('파일이 없습니다.'); return; }
+  if(file.type === 'application/pdf' || /\.pdf$/i.test(file.name||'')){ loadPdf(file); return; }
+  if(!file.type.startsWith('image/')){ setStatus('이미지 또는 PDF 파일이 아닙니다.'); return; }
   const url = URL.createObjectURL(file);
   const im = new Image();
   im.onload = () => {
@@ -397,7 +434,7 @@ function loadFile(file){
   im.src = url;
 }
 drop.addEventListener('click', () => {
-  const inp=document.createElement('input'); inp.type='file'; inp.accept='image/*';
+  const inp=document.createElement('input'); inp.type='file'; inp.accept='image/*,application/pdf';
   inp.onchange=()=>loadFile(inp.files[0]); inp.click();
 });
 drop.addEventListener('keydown', e=>{ if(e.key==='Enter'||e.key===' ') drop.click(); });
@@ -422,13 +459,16 @@ document.addEventListener('drop', e=>{
   if(!f) return;
   e.preventDefault();
   stageCol.classList.remove('dropOver');
-  if(f.type.startsWith('image/')) loadFile(f);
+  // PDF 도 받는다 (loadFile 안에서 종류를 가려 처리한다)
+  if(f.type.startsWith('image/') || f.type === 'application/pdf' || /\.pdf$/i.test(f.name||'')){
+    loadFile(f);
+  }
 });
 
 // "새 악보" 버튼: 파일 선택창을 열어 다른 악보로 바꾼다.
 $('btnNew').addEventListener('click', ()=>{
   if(chords.length && !confirm('현재 악보의 코드 편집 내용이 사라집니다. 새 악보를 여시겠습니까?')) return;
-  const inp=document.createElement('input'); inp.type='file'; inp.accept='image/*';
+  const inp=document.createElement('input'); inp.type='file'; inp.accept='image/*,application/pdf';
   inp.onchange=()=>{ if(inp.files[0]) loadFile(inp.files[0]); };
   inp.click();
 });
