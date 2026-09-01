@@ -70,7 +70,6 @@
     border:2px solid var(--pencil); background:#fff; color:#1a1a1a; line-height:16px;}
   .cbox.off .tag{background:#6b7180;}
   #outCanvas{width:100%; border-radius:4px; display:none;}
-  #tempBox{position:absolute; border:2px dashed var(--pencil); background:var(--pencil-soft); display:none; pointer-events:none;}
 
   /* ---------- side panel ---------- */
   .side{display:flex; flex-direction:column; gap:14px;}
@@ -143,7 +142,6 @@
       </div>
       <div id="imgWrap">
         <img id="srcImg" alt="원본 악보">
-        <div id="tempBox"></div>
       </div>
       <canvas id="outCanvas"></canvas>
     </div>
@@ -156,7 +154,7 @@
       <h2>1 · 코드 인식 <span style="color:var(--muted); font-weight:400; letter-spacing:0;">(위치: Tesseract · 판독: 커스텀 모델 v1)</span></h2>
       <div class="row">
         <button class="btn primary grow" id="btnOcr" disabled>코드 인식 실행</button>
-        <button class="btn" id="btnAdd" disabled title="인식 못한 코드를 직접 드래그로 추가">+ 직접 추가</button>
+        <button class="btn" id="btnAdd" disabled title="인식 못한 코드를 클릭으로 추가 (Esc로 종료)">+ 직접 추가</button>
         <button class="btn" id="btnNew" disabled title="다른 악보를 불러옵니다 (현재 작업은 사라집니다)">새 악보</button>
       </div>
       <div style="margin-top:10px">
@@ -389,6 +387,7 @@ function loadFile(file){
     // (이전 악보의 +3 이 남아 있으면 방금 연 악보가 이미 조옮김된 것처럼 보인다)
     setSemi(0);
     resetControls();
+    if(addMode) setAddMode(false);   // 이전 악보의 직접 추가 모드가 남지 않게
     drop.style.display='none'; imgWrap.style.display='block';
     document.querySelector('.stage-body').classList.remove('empty');
     $('btnOcr').disabled=false; $('btnAdd').disabled=false; $('btnSave').disabled=false; $('btnNew').disabled=false;
@@ -1362,49 +1361,75 @@ $('debugLink').addEventListener('click', e=>{
   }
 });
 
-/* ==================== 직접 추가 (드래그) ==================== */
-let dragStart = null;
-$('btnAdd').addEventListener('click', ()=>{
-  addMode = !addMode;
-  imgWrap.classList.toggle('adding', addMode);
-  $('btnAdd').textContent = addMode ? '드래그로 영역 지정…' : '+ 직접 추가';
-  if(addMode){ switchTab('edit'); setStatus('이미지에서 코드 위치를 드래그하세요.'); }
+/* ==================== 직접 추가 (클릭) ==================== */
+// ---------- 직접 추가 ----------
+// 드래그로 영역을 그리게 했더니 불편했다. 어차피 인식에 실패한 자리라
+// "글자를 정확히 감싸는 것"은 의미가 없고, 위치만 알면 된다.
+// 그래서 클릭 한 번으로 그 자리에 코드 칸을 만들고 바로 입력하게 한다.
+// 모드는 한 번 켜면 계속 유지되어 여러 개를 연속으로 찍을 수 있고,
+// Esc 또는 버튼을 다시 눌러 끝낸다.
+function setAddMode(on){
+  addMode = on;
+  imgWrap.classList.toggle('adding', on);
+  $('btnAdd').textContent = on ? '직접 추가 끝내기 (Esc)' : '+ 직접 추가';
+  $('btnAdd').classList.toggle('primary', on);
+  if(on){
+    switchTab('edit');
+    setStatus('코드를 넣을 자리를 클릭하세요. 계속 추가할 수 있고, 끝내려면 Esc를 누르세요.');
+  }else{
+    setStatus('직접 추가를 마쳤습니다.');
+  }
+}
+
+$('btnAdd').addEventListener('click', ()=> setAddMode(!addMode));
+
+document.addEventListener('keydown', e=>{
+  if(e.key === 'Escape' && addMode){
+    // 인라인 입력 중이면 그 입력만 취소되도록 두고, 그 외에는 모드를 끝낸다
+    if(document.activeElement && document.activeElement.classList.contains('inlineEdit')) return;
+    e.preventDefault();
+    setAddMode(false);
+  }
 });
+
 function evtToImgXY(e){
   const r = srcImg.getBoundingClientRect();
   const sc = imgW / r.width;
   return { x:(e.clientX-r.left)*sc, y:(e.clientY-r.top)*sc };
 }
-imgWrap.addEventListener('pointerdown', e=>{
+
+imgWrap.addEventListener('click', e=>{
   if(!addMode) return;
+  // 기존 코드 박스를 눌렀을 때는 그쪽 동작(포함/제외·수정)에 맡긴다
+  if(e.target.closest('.cbox')) return;
   e.preventDefault();
-  dragStart = evtToImgXY(e);
-  imgWrap.setPointerCapture(e.pointerId);
-});
-imgWrap.addEventListener('pointermove', e=>{
-  if(!addMode || !dragStart) return;
-  const p = evtToImgXY(e), sc = srcImg.getBoundingClientRect().width / imgW;
-  const t = $('tempBox');
-  t.style.display='block';
-  t.style.left  = Math.min(dragStart.x,p.x)*sc+'px';
-  t.style.top   = Math.min(dragStart.y,p.y)*sc+'px';
-  t.style.width = Math.abs(p.x-dragStart.x)*sc+'px';
-  t.style.height= Math.abs(p.y-dragStart.y)*sc+'px';
-});
-imgWrap.addEventListener('pointerup', e=>{
-  if(!addMode || !dragStart) return;
+  e.stopPropagation();
+
   const p = evtToImgXY(e);
-  const x0=Math.min(dragStart.x,p.x), x1=Math.max(dragStart.x,p.x);
-  const y0=Math.min(dragStart.y,p.y), y1=Math.max(dragStart.y,p.y);
-  dragStart=null; $('tempBox').style.display='none';
-  addMode=false; imgWrap.classList.remove('adding'); $('btnAdd').textContent='+ 직접 추가';
-  if(x1-x0 < 8 || y1-y0 < 8){ setStatus('영역이 너무 작습니다.'); return; }
-  const c = { id:nextId++, x0,y0,x1,y1, text:'', included:true };
-  chords.push(c); selectedId = c.id;
+  // 클릭 지점을 중심으로, 그 자리 오선 간격에 맞춘 기본 크기 칸을 만든다.
+  // (크기는 어차피 글자 크기 계산에 쓰지 않으므로 대략이면 충분하다)
+  let gap = 0;
+  if(chords.length){
+    const near = chords.reduce((a,b)=>
+      Math.abs((a.y0+a.y1)/2 - p.y) < Math.abs((b.y0+b.y1)/2 - p.y) ? a : b);
+    gap = near.gap || 0;
+  }
+  const hh = gap ? gap*1.9 : imgH*0.022;
+  const ww = hh*1.6;
+
+  const c = {
+    id: nextId++,
+    x0: p.x - ww/2, y0: p.y - hh/2,
+    x1: p.x + ww/2, y1: p.y + hh/2,
+    text: '', included: true, gap
+  };
+  chords.push(c);
+  selectedId = c.id;
   renderAll();
-  setStatus('목록에서 코드명을 입력하세요.');
-  const inp = document.querySelector(`.citem[data-id="${c.id}"] input[type=text]`);
-  if(inp) inp.focus();
+
+  // 만든 자리에서 바로 입력 (목록까지 내려갈 필요 없음)
+  const boxEl = imgWrap.querySelector(`.cbox[data-id="${c.id}"]`);
+  if(boxEl) startInlineEdit(boxEl, c);
 });
 
 /* ==================== 이조 UI ==================== */
@@ -1482,6 +1507,9 @@ function startInlineEdit(boxEl, c){
       c.text = v;
       if(v) c.included = true;   // 고쳐 넣었으면 포함 상태로 되돌린다
     }
+    // 직접 추가로 만든 빈 칸을 그대로 두면 '?' 만 남아 지저분하다.
+    // 아무것도 입력하지 않았으면 그 칸을 없앤다.
+    if(!c.text) chords = chords.filter(x => x.id !== c.id);
     renderAll();
   };
   inp.addEventListener('click', e=>e.stopPropagation());
