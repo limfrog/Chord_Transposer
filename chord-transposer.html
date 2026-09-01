@@ -532,7 +532,14 @@ function detectStaffSystems(ctx, w, h){
   // (실측: 줄 밝기가 180~200 대인데 Otsu 임계값이 180이라 5줄 중 3줄 소실).
   // 그래서 오선 "검출"에 한해서는 원래 회색값을 다시 보고, 더 관대한 기준으로 잉크를 판정한다.
   // (코드 글자 검출은 기존 이진화 결과를 그대로 쓴다 — 여기만 완화한다)
-  const GRAY_INK = 190;
+  // 잉크가 아주 옅게 스캔된 악보는 190 으로도 오선이 끊긴다
+  // (실측: 한 줄이 30조각으로 갈라져 행 투영이 0.197 로 임계 0.25 를 못 넘음).
+  // 그런 이미지에서만 기준을 더 풀어준다. 진한 이미지에 적용하면
+  // 배경 얼룩까지 잉크로 잡혀 오히려 오선 검출이 망가진다.
+  let darkPx = 0;
+  for(let i = 0; i < data.length; i += 4) if(data[i] <= 190) darkPx++;
+  const inkRatio = darkPx / (w*h);
+  const GRAY_INK = inkRatio < 0.07 ? 215 : 190;
   const isBlack = (x, y) => {
     const i = (y*w + x)*4;
     return data[i] === 0 || data[i] <= GRAY_INK;
@@ -587,14 +594,34 @@ function detectStaffSystems(ctx, w, h){
     for(let i = 1; i < centers.length; i++) gaps.push(centers[i] - centers[i-1]);
     // 중앙값을 쓰면 단 사이의 큰 간격까지 섞여 왜곡된다(실측: 실제 24인데 중앙값 44).
     // 오선 줄 간격은 페이지에서 가장 자주 나타나는 값이므로 최빈값을 쓴다.
+    // 단순 최빈값은 위험하다. 가사·음표에서 생긴 촘촘한 간격(4~5px)이
+    // 진짜 오선 간격(25px)보다 훨씬 많이 나오는 악보가 있다(실측: 빈도 8 대 2).
+    // 그래서 "그 간격으로 5줄 격자가 실제로 성립하는지"를 함께 본다.
+    const nearC = (p, tol) => centers.some(v => Math.abs(v - p) <= tol);
     const bins = new Map();
     for(const g of gaps){
       if(g < 3 || g > 120) continue;
       const k = Math.round(g);
       bins.set(k, (bins.get(k) || 0) + 1);
     }
-    let medGap = 0, bestN = 0;
-    for(const [k, n] of bins) if(n > bestN){ bestN = n; medGap = k; }
+    let medGap = 0, bestScore = -1;
+    for(const [k, n] of bins){
+      // 이 간격으로 5줄이 맞아떨어지는 자리가 몇 군데나 있는지 센다
+      let grids = 0;
+      const tol = Math.max(1.5, k * 0.30);
+      for(const c0 of centers){
+        let hit = 0;
+        for(let s = 1; s <= 4; s++) if(nearC(c0 + s*k, tol)) hit++;
+        if(hit === 4) grids++;
+      }
+      // 격자가 성립하는 간격을 우선하고, 같으면 빈도로 가른다
+      const score = grids * 1000 + n;
+      if(grids > 0 && score > bestScore){ bestScore = score; medGap = k; }
+    }
+    if(!medGap){   // 격자가 하나도 없으면 종전대로 최빈값
+      let bn = 0;
+      for(const [k, n] of bins) if(n > bn){ bn = n; medGap = k; }
+    }
     if(medGap > 2){
       const filled = [centers[0]];
       for(let i = 1; i < centers.length; i++){
@@ -1221,7 +1248,11 @@ async function runOcr(){
     // 원본 해상도가 낮을수록 더 크게 확대 (위치 검출 정확도를 위함)
     let scale = imgW < 900 ? 4 : imgW < 1800 ? 2.5 : 1.6;
     const longSide = Math.max(imgW, imgH) * scale;
-    if(longSide > 3500) scale *= 3500 / longSide; // 지나치게 큰 캔버스 방지 (속도/메모리)
+    // 지나치게 큰 캔버스 방지 (속도/메모리).
+    // 3500 으로 두면 오선 간격이 촘촘한 악보가 충분히 확대되지 못해
+    // 격자 매칭이 실패한다(실측: 상한 3500 에서 검출 1~3개 -> 4800 에서 17개).
+    // 기존 37종은 이미 상한 아래라 영향 없음(1146 동일).
+    if(longSide > 4800) scale *= 4800 / longSide;
     const cvW = Math.round(imgW*scale), cvH = Math.round(imgH*scale);
 
     // 보정각을 적용한 캔버스를 만들고, 이진화 후 오선을 세어 본다.
