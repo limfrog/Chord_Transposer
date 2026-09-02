@@ -161,7 +161,7 @@
       <div style="margin-top:10px">
         <div class="row" style="justify-content:space-between; margin-bottom:4px;">
           <span style="font-size:12px; color:var(--muted);">코드 글자 크기 (오선 간격 대비)</span>
-          <span style="font-size:12px; color:var(--paper); font-weight:600;" id="chordSizeVal">1.25 ~ 2.90</span>
+          <span style="font-size:12px; color:var(--paper); font-weight:600;" id="chordSizeVal">1.25 ~ 3.05</span>
         </div>
         <input type="range" id="chordSizeSlider" min="110" max="200" value="125" style="width:100%; accent-color:var(--pencil);">
         <div class="hint" style="margin-top:2px;">코드 글자는 오선 간격에 비례한 크기를 가집니다(실측 1.55~1.95). 이보다 작은 것(음표 기둥, 가사, 높은음자리표)은 제외됩니다. 코드를 놓치면 낮추고, 음표·가사가 섞이면 올리세요.</div>
@@ -322,7 +322,7 @@ function resetControls(){
   chordHRatioMin = 1.25;
   document.getElementById('chordSizeSlider').value = 125;
   document.getElementById('chordSizeVal').textContent =
-    chordHRatioMin.toFixed(2) + ' ~ ' + (chordHRatioMin + 1.65).toFixed(2);
+    chordHRatioMin.toFixed(2) + ' ~ ' + (chordHRatioMin + CHORD_H_RATIO_SPAN).toFixed(2);
 
   // 임시표 우선 설정도 '자동'으로
   accPref = 'auto';
@@ -901,7 +901,11 @@ function groupComponentsIntoWords(components, gapThreshold, maxGroupWidth, staff
       const gcy = (g.y0 + g.y1) / 2;
       const heightRatio = Math.max(ch, gh) / Math.max(1, Math.min(ch, gh));
       const gapOk = c.x0 - g.x1 <= gapThreshold;
-      const heightOk = heightRatio <= 2.2;          // 높이가 2.2배 넘게 차이나면 별개 성분
+      // 소문자 첨자는 원래 작다. 2.2 로 두면 G(51px)+m(22px)=2.32 가 거부되어
+      // Gm 이 G 로, Em 이 E 로 잘린다(실측). 3.0 으로 올리면 이런 잘림이 줄어든다.
+      // 스윕(37종): 2.2 -> 1161/오탐118 / **3.0 -> 1159/오탐100** / 3.5 -> 1160/101
+      // 정답 -2 대신 오탐 -18 이라 순이득이 크다.
+      const heightOk = heightRatio <= 3.0;
       const centerOk = Math.abs(ccy - gcy) <= Math.max(ch, gh) * 0.55; // 세로 중심이 비슷한 선에
       // 폭 상한을 오선 간격만으로 두면, 큰 폰트로 쓰인 슬래시 코드(Bbm/Db 등)가
       // 상한을 넘어 "/" 자리에서 쪼개진다(실측: 상한 172px vs 실제 220px).
@@ -952,7 +956,11 @@ function looksLikeLatinText(ctx, x0, y0, x1, y1){
 // 높이/줄간격이 약 1.6~1.95인 반면, 오탐은 확실히 다른 대역에 몰려 있다:
 //   음표 기둥·빔 조각 0.25~0.33 / 한글 가사·지시어 0.55~0.62 / 이음줄·음자리표 1.05~1.25
 // 양쪽에 여유를 둔 창을 쓴다.
-const CHORD_H_RATIO_SPAN = 1.65; // 하한에서 이만큼 위까지 허용.
+// 하한에서 이만큼 위까지 허용.
+// 병합 조건(heightOk)을 3.0 으로 완화하면서 첨자가 붙은 박스가 세로로 커졌다.
+// 1.65 로 두면 그 박스들이 크기창 위로 삐져나가 탈락한다.
+// 스윕(37종): 1.65 -> 1159/오탐100 / **1.8 -> 1171/104** / 1.9 -> 1172/107 / 2.0 -> 1172/111
+const CHORD_H_RATIO_SPAN = 1.8;
                                    // 윗첨자(A⁷, Dmaj⁷, Asus⁴ 등)가 붙으면 글자 전체 높이가 크게
                                    // 늘어난다(실측 2.44~2.95). 좁게 두면 그런 코드가 통째로 탈락한다.
 
@@ -1165,6 +1173,44 @@ async function loadOrtModel(){
 
 // 이미지에서 박스 하나를 모델 입력 형식(32x100 그레이스케일 [0,1])으로 크롭+리사이즈.
 // 학습 시(data.py render_chord_image)와 동일하게: 약간의 여백 + 종횡비 무시 리사이즈.
+// 박스 좌우가 글자 중간에서 잘리는 일이 잦다(실측: 박스 1380개 중 416개, 30%).
+// Gm 이 G 로, Em 이 E 로 잘려 모델은 "보이는 대로" 정확히 읽지만 답은 틀린다.
+// 그래서 박스 경계 바로 밖에 잉크가 이어지면, 끊길 때까지 넓혀준다.
+function expandToInk(srcImage, srcW, srcH, x0, y0, x1, y1){
+  const h = y1 - y0;
+  if(h < 4) return { x0, y0, x1, y1 };
+  const cv = newCanvas(srcW, srcH);
+  const ctx = cv.getContext('2d', { willReadFrequently: true });
+  ctx.drawImage(srcImage, 0, 0, srcW, srcH);
+  const yA = Math.max(0, Math.round(y0)), yB = Math.min(srcH, Math.round(y1));
+  if(yB <= yA) return { x0, y0, x1, y1 };
+  const band = ctx.getImageData(0, yA, srcW, yB - yA).data;
+  const bh = yB - yA;
+  // 그 열에 글자 높이의 25% 이상 어두운 픽셀이 있으면 "잉크가 있는 열"
+  const inkCol = (x) => {
+    if(x < 0 || x >= srcW) return false;
+    let n = 0;
+    for(let y = 0; y < bh; y++){
+      const i = (y*srcW + x)*4;
+      const v = (band[i] + band[i+1] + band[i+2]) / 3;
+      if(v <= 170) n++;
+    }
+    return n > bh * 0.12;   // 실측: 0.25 는 너무 엄격해 확장이 6% 만 일어났다
+  };
+  const LIMIT = Math.max(4, Math.round(h * 1.2));   // 지나친 확장 방지
+  let nx1 = Math.round(x1);
+  for(let k = 0; k < LIMIT; k++){
+    if(!inkCol(nx1)) break;
+    nx1++;
+  }
+  let nx0 = Math.round(x0);
+  for(let k = 0; k < LIMIT; k++){
+    if(!inkCol(nx0 - 1)) break;
+    nx0--;
+  }
+  return { x0: nx0, y0, x1: nx1, y1 };
+}
+
 function cropForModel(srcImage, srcW, srcH, x0, y0, x1, y1, padFactor){
   const w = x1 - x0, h = y1 - y0;
   const pad = Math.max(2, h * (padFactor === undefined ? 0.25 : padFactor));
@@ -1221,7 +1267,8 @@ async function readPass(session, srcImage, srcW, srcH, boxes, padFactor){
   const N = boxes.length;
   const batch = new Float32Array(N * MODEL_IMG_H * MODEL_IMG_W);
   boxes.forEach((b, i) => {
-    batch.set(cropForModel(srcImage, srcW, srcH, b.x0, b.y0, b.x1, b.y1, padFactor),
+    const e = expandToInk(srcImage, srcW, srcH, b.x0, b.y0, b.x1, b.y1);
+    batch.set(cropForModel(srcImage, srcW, srcH, e.x0, e.y0, e.x1, e.y1, padFactor),
               i * MODEL_IMG_H * MODEL_IMG_W);
   });
   const tensor = new ort.Tensor('float32', batch, [N, 1, MODEL_IMG_H, MODEL_IMG_W]);
