@@ -1197,7 +1197,9 @@ function expandToInk(srcImage, srcW, srcH, x0, y0, x1, y1){
     }
     return n > bh * 0.12;   // 실측: 0.25 는 너무 엄격해 확장이 6% 만 일어났다
   };
-  const LIMIT = Math.max(4, Math.round(h * 1.2));   // 지나친 확장 방지
+  // 지나친 확장 방지. 1.2 로 두면 긴 코드(Bbm/Db 등)의 뒷부분을 다 못 살린다.
+  // 스윕(37종): 1.2 -> 1171/오탐104 / 2.0 -> 1172/104 / **3.0 -> 1173/103** / 6.0 도 동일(포화)
+  const LIMIT = Math.max(4, Math.round(h * 3.0));
   let nx1 = Math.round(x1);
   for(let k = 0; k < LIMIT; k++){
     if(!inkCol(nx1)) break;
