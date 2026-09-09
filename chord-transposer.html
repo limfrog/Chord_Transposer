@@ -125,7 +125,7 @@
 <header>
   <h1><span class="flat">♭</span> 코드 이조기</h1>
   <span class="sub">악보 이미지의 코드를 인식해 원하는 조성으로 일괄 변환</span>
-  <span class="sub" style="margin-left:auto; font-family:Georgia,serif; color:var(--pencil);" id="buildStamp">probe-v6.6 · build …</span>
+  <span class="sub" style="margin-left:auto; font-family:Georgia,serif; color:var(--pencil);" id="buildStamp">probe-v6.7 · build …</span>
 </header>
 
 <div class="layout">
@@ -357,7 +357,7 @@ const $ = id => document.getElementById(id);
   };
   const fallback = () => {
     const d = new Date(document.lastModified);
-    el.textContent = isNaN(d) ? 'probe-v6.6 · build (알 수 없음)' : 'probe-v6.6 · build ' + fmt(d);
+    el.textContent = isNaN(d) ? 'probe-v6.7 · build (알 수 없음)' : 'probe-v6.7 · build ' + fmt(d);
   };
   fetch(location.href, { method: 'HEAD', cache: 'no-store' })
     .then(res => {
@@ -365,7 +365,7 @@ const $ = id => document.getElementById(id);
       if(!lm) return fallback();
       const d = new Date(lm);
       if(isNaN(d)) return fallback();
-      el.textContent = 'probe-v6.6 · build ' + fmt(d);
+      el.textContent = 'probe-v6.7 · build ' + fmt(d);
     })
     .catch(fallback);
 })();
@@ -1143,7 +1143,7 @@ function detectChordCandidates(ctx, cvWidth, staffSystems){
       if(looksLikeSlur(ctx, w.x0, w.y0, w.x1, w.y1)) continue;
       if(looksLikeLatinText(ctx, w.x0, w.y0, w.x1, w.y1)) boxes.push(w);
     }
-    // probe-v6.6: 한 단에서 낮은-height 후보가 여러 개 같은 코드행에 정렬되어 있으면
+    // probe-v6.7: 한 단에서 낮은-height 후보가 여러 개 같은 코드행에 정렬되어 있으면
     // 개별 잡음이 아니라 실제 코드행일 가능성이 높다. 최종 판독 단계에서 cluster 단위로
     // 다시 검증하기 위해 id를 붙인다. (plain D/G/D, bass-only /A# 누락 복구용)
     const lowClusterId = lowSized.length >= 3 ? `low-${i}` : null;
@@ -1812,7 +1812,7 @@ async function recognizeBoxesWithModel(srcImage, srcW, srcH, boxes){
   }
 
 
-  // probe-v6.6: 같은 root를 bass로 다시 적은 X.../X는 음악적으로 중복 표기이며,
+  // probe-v6.7: 같은 root를 bass로 다시 적은 X.../X는 음악적으로 중복 표기이며,
   // 실제 회귀셋에서는 음표/빔이 slash bass로 오인된 경우였다.
   // tight crop이 더 구체적인 quality를 보존하면 그것을 우선한 뒤 redundant bass를 제거한다.
   const sameBassIdx=[];
@@ -1835,7 +1835,7 @@ async function recognizeBoxesWithModel(srcImage, srcW, srcH, boxes){
     }
   }
 
-  // probe-v6.6: X(add2)에서 7만 약하게 소실되는 특수 조판.
+  // probe-v6.7: X(add2)에서 7만 약하게 소실되는 특수 조판.
   // .42 crop이 정확히 같은 root/quality에 7 하나만 추가할 때만 허용한다.
   const add2Idx=[];
   for(let i=0;i<boxes.length;i++) if(/^[A-G][#b]?\(add2\)$/.test(base.texts[i]||'')) add2Idx.push(i);
@@ -1849,7 +1849,7 @@ async function recognizeBoxesWithModel(srcImage, srcW, srcH, boxes){
   }
 
 
-  // probe-v6.6: 모델 문법상 통과하지만 실제 quality로는 불가능한 "두 번째 #" 오염 제거.
+  // probe-v6.7: 모델 문법상 통과하지만 실제 quality로는 불가능한 "두 번째 #" 오염 제거.
   // 이 모델의 root accidental은 한 글자만 지원하므로 F##7/F##M7은 double-sharp 표기가 아니라
   // F#7의 7 주변 잉크를 #/M으로 오인한 결과다. 사용자가 제공한 사랑합니다 악보의 두 F#7에 해당.
   for(let i=0;i<base.texts.length;i++){
@@ -1861,7 +1861,7 @@ async function recognizeBoxesWithModel(srcImage, srcW, srcH, boxes){
     }
   }
 
-  // probe-v6.6: 긴 parenthetical tension에서 내부의 7(9, 가 100px 축소 중 사라져
+  // probe-v6.7: 긴 parenthetical tension에서 내부의 7(9, 가 100px 축소 중 사라져
   // A7(9,13)->A(13)이 되는 경우. 세 가지 tight crop 중 같은 root의 더 긴
   // '(9,13)' 코드가 2회 이상 나올 때만 복원한다.
   const tensionIdx=[];
@@ -1878,6 +1878,58 @@ async function recognizeBoxesWithModel(srcImage, srcW, srcH, boxes){
       }
       const best=[...cnt].sort((a,b)=>b[1]-a[1])[0];
       if(best && best[1]>=2 && best[0].length>cur.length) base.texts[i]=best[0];
+    }
+  }
+
+
+  // probe-v6.7: parenthetical tension 내부의 앞쪽 숫자만 소실된 경우.
+  // 예: A(9,13) -> A(13). root/prefix는 그대로 두고, 여러 crop 중 2개 이상에서
+  // "(9,13)"의 9가 확인될 때만 현재 코드의 괄호 내용을 복원한다.
+  const innerTensionIdx=[];
+  for(let i=0;i<boxes.length;i++){
+    if(/^[A-G][#b]?\(13\)$/.test(base.texts[i]||'')) innerTensionIdx.push(i);
+  }
+  if(innerTensionIdx.length){
+    const p00=await readPass(session,srcImage,srcW,srcH,innerTensionIdx.map(i=>boxes[i]),0.00);
+    const p08=await readPass(session,srcImage,srcW,srcH,innerTensionIdx.map(i=>boxes[i]),0.08);
+    const p16=await readPass(session,srcImage,srcW,srcH,innerTensionIdx.map(i=>boxes[i]),0.16);
+    const p32=await readPass(session,srcImage,srcW,srcH,innerTensionIdx.map(i=>boxes[i]),0.32);
+    for(let k=0;k<innerTensionIdx.length;k++){
+      const i=innerTensionIdx[k], cur=base.texts[i]||'';
+      const root=/^([A-G][#b]?)/.exec(cur)?.[1]||'';
+      let evidence=0;
+      for(const q of [p00.texts[k],p08.texts[k],p16.texts[k],p32.texts[k]]){
+        if(!q || !q.startsWith(root)) continue;
+        // CRNN이 7을 붙이거나 빼는 변동은 무시하고, 괄호 안 9,13 관측만 증거로 쓴다.
+        if(/\(9,13\)$/.test(q)) evidence++;
+      }
+      if(evidence>=2){
+        const q=root+'(9,13)';
+        if(isChordLike(q)) base.texts[i]=q;
+      }
+    }
+  }
+
+  // probe-v6.7: bass-only slash 코드의 오른쪽 accidental이 작은 독립 성분으로 잘리는 경우.
+  // 현재가 /A 같은 natural bass이고, 더 넓은 세 crop 중 2개 이상이 정확히 같은
+  // /A# 또는 /Ab를 제시할 때만 accidental을 복구한다.
+  const bassOnlyNaturalIdx=[];
+  for(let i=0;i<boxes.length;i++){
+    if(/^\/[A-G]$/.test(base.texts[i]||'')) bassOnlyNaturalIdx.push(i);
+  }
+  if(bassOnlyNaturalIdx.length){
+    const b30=await readPass(session,srcImage,srcW,srcH,bassOnlyNaturalIdx.map(i=>boxes[i]),0.30);
+    const b40=await readPass(session,srcImage,srcW,srcH,bassOnlyNaturalIdx.map(i=>boxes[i]),0.40);
+    const b55=await readPass(session,srcImage,srcW,srcH,bassOnlyNaturalIdx.map(i=>boxes[i]),0.55);
+    for(let k=0;k<bassOnlyNaturalIdx.length;k++){
+      const i=bassOnlyNaturalIdx[k], cur=base.texts[i]||'';
+      const root=cur.slice(1);
+      const cnt=new Map();
+      for(const q of [b30.texts[k],b40.texts[k],b55.texts[k]]){
+        if(q===`/${root}#` || q===`/${root}b`) cnt.set(q,(cnt.get(q)||0)+1);
+      }
+      const best=[...cnt.entries()].sort((a,b)=>b[1]-a[1])[0];
+      if(best && best[1]>=2 && isChordLike(best[0])) base.texts[i]=best[0];
     }
   }
 
