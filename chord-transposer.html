@@ -125,7 +125,7 @@
 <header>
   <h1><span class="flat">♭</span> 코드 이조기</h1>
   <span class="sub">악보 이미지의 코드를 인식해 원하는 조성으로 일괄 변환</span>
-  <span class="sub" style="margin-left:auto; font-family:Georgia,serif; color:var(--pencil);" id="buildStamp">probe-v6.7 · build …</span>
+  <span class="sub" style="margin-left:auto; font-family:Georgia,serif; color:var(--pencil);" id="buildStamp">probe-v6.8 · build …</span>
 </header>
 
 <div class="layout">
@@ -357,7 +357,7 @@ const $ = id => document.getElementById(id);
   };
   const fallback = () => {
     const d = new Date(document.lastModified);
-    el.textContent = isNaN(d) ? 'probe-v6.7 · build (알 수 없음)' : 'probe-v6.7 · build ' + fmt(d);
+    el.textContent = isNaN(d) ? 'probe-v6.8 · build (알 수 없음)' : 'probe-v6.8 · build ' + fmt(d);
   };
   fetch(location.href, { method: 'HEAD', cache: 'no-store' })
     .then(res => {
@@ -365,7 +365,7 @@ const $ = id => document.getElementById(id);
       if(!lm) return fallback();
       const d = new Date(lm);
       if(isNaN(d)) return fallback();
-      el.textContent = 'probe-v6.7 · build ' + fmt(d);
+      el.textContent = 'probe-v6.8 · build ' + fmt(d);
     })
     .catch(fallback);
 })();
@@ -1931,6 +1931,66 @@ async function recognizeBoxesWithModel(srcImage, srcW, srcH, boxes){
       const best=[...cnt.entries()].sort((a,b)=>b[1]-a[1])[0];
       if(best && best[1]>=2 && isChordLike(best[0])) base.texts[i]=best[0];
     }
+  }
+
+
+  // probe-v6.8: 긴 tension을 한 번에 읽지 못하는 경우를 "부분 증거 결합"으로 복구.
+  // 실제 사례 A7(9,13): 한 비대칭 crop은 A(9), 다른 crop은 A7(13)으로 안정 판독됨.
+  // 현재 결과가 X(13)인 경우에만, 같은 root에서 (9) 증거와 7(13) 증거가 각각 확인될 때
+  // X7(9,13)으로 합성한다. 일반 코드에는 적용하지 않는다.
+  const splitTensionIdx=[];
+  for(let i=0;i<boxes.length;i++){
+    const t=base.texts[i]||'';
+    if(/^[A-G][#b]?\(13\)$/.test(t)){
+      const b=boxes[i], h=Math.max(1,b.y1-b.y0);
+      const asp=(b.x1-b.x0)/h;
+      if(asp>=2.4) splitTensionIdx.push(i);
+    }
+  }
+  for(const i of splitTensionIdx){
+    const b=boxes[i], h=Math.max(1,b.y1-b.y0);
+    const root=/^([A-G][#b]?)/.exec(base.texts[i])?.[1];
+    if(!root) continue;
+    const rects=[
+      {x0:b.x0-1.50*h,y0:b.y0-0.40*h,x1:b.x1+0.70*h,y1:b.y1+0.30*h},
+      {x0:b.x0-1.35*h,y0:b.y0-0.30*h,x1:b.x1+0.75*h,y1:b.y1+0.30*h},
+      {x0:b.x0-1.20*h,y0:b.y0-0.20*h,x1:b.x1+0.70*h,y1:b.y1+0.30*h},
+      {x0:b.x0-1.50*h,y0:b.y0-0.40*h,x1:b.x1+0.25*h,y1:b.y1+0.30*h}
+    ];
+    const rr=await readRectPass(session,srcImage,srcW,srcH,rects);
+    let ev9=0, ev713=0;
+    for(const q0 of rr.texts){
+      const q=norm(q0||'');
+      if(!q.startsWith(root)) continue;
+      if(new RegExp('^'+root.replace('#','\\#')+'(?:7)?\\(9\\)$').test(q)) ev9++;
+      if(q===root+'7(13)' || q===root+'7(b13)') ev713++;
+    }
+    if(ev9>=1 && ev713>=1){
+      const candidate=root+'7(9,13)';
+      if(isChordLike(candidate)) base.texts[i]=candidate;
+    }
+  }
+
+  // probe-v6.8: bass-only accidental은 오른쪽에 작은 독립 성분으로 존재할 수 있어
+  // 대칭 pad로는 crop 안에 충분히 들어오지 않는다.
+  // /A 같은 결과에 대해 오른쪽만 0.75~1.05 글자높이 확장한 세 rect를 직접 읽고,
+  // 2개 이상이 동일한 /A# 또는 /Ab를 제시할 때만 복원한다.
+  const bassOnlyWideIdx=[];
+  for(let i=0;i<boxes.length;i++) if(/^\/[A-G]$/.test(base.texts[i]||'')) bassOnlyWideIdx.push(i);
+  for(const i of bassOnlyWideIdx){
+    const b=boxes[i], h=Math.max(1,b.y1-b.y0), root=(base.texts[i]||'').slice(1);
+    const rects=[0.75,0.90,1.05].map(r=>({
+      x0:b.x0-0.10*h, y0:b.y0-0.40*h,
+      x1:b.x1+r*h,    y1:b.y1+0.40*h
+    }));
+    const rr=await readRectPass(session,srcImage,srcW,srcH,rects);
+    const cnt=new Map();
+    for(const q0 of rr.texts){
+      const q=norm(q0||'');
+      if(q===`/${root}#` || q===`/${root}b`) cnt.set(q,(cnt.get(q)||0)+1);
+    }
+    const best=[...cnt.entries()].sort((a,b)=>b[1]-a[1])[0];
+    if(best && best[1]>=2 && isChordLike(best[0])) base.texts[i]=best[0];
   }
 
   // edge-beam clean retry: 기존 판독도 정상 코드이고 clean 판독도 정상 코드이며
