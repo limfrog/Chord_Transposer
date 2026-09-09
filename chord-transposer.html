@@ -125,7 +125,7 @@
 <header>
   <h1><span class="flat">♭</span> 코드 이조기</h1>
   <span class="sub">악보 이미지의 코드를 인식해 원하는 조성으로 일괄 변환</span>
-  <span class="sub" style="margin-left:auto; font-family:Georgia,serif; color:var(--pencil);" id="buildStamp">probe-v6.9 · build …</span>
+  <span class="sub" style="margin-left:auto; font-family:Georgia,serif; color:var(--pencil);" id="buildStamp">probe-v7.0 · build …</span>
 </header>
 
 <div class="layout">
@@ -227,7 +227,7 @@ const AUTO  = ['C','Db','D','Eb','E','F','F#','G','Ab','A','Bb','B'];
 const KEYS  = ['C','Db','D','Eb','E','F','F#','G','Ab','A','Bb','B'];
 
 // 일반 코드(C, F#m7, Bb/D) + 루트 없이 베이스만 적은 축약 표기(/D, /F#) 모두 허용
-const CHORD_RE = /^(?:(?<root>[A-G])(?<acc>[#b]?)(?<quality>(?:maj|min|add|sus|dim|aug|alt|M|m|o|\d|[#b()+\-°øΔ])*)(?:\/(?<bass>[A-G])(?<bassAcc>[#b]?))?|\/(?<bassOnlyRoot>[A-G])(?<bassOnlyAcc>[#b]?))$/;
+const CHORD_RE = /^(?:(?<root>[A-G])(?<acc>[#b]?)(?<quality>(?:maj|min|add|sus|dim|aug|alt|M|m|o|\d|[#b(),+\-°øΔ])*)(?:\/(?<bass>[A-G])(?<bassAcc>[#b]?))?|\/(?<bassOnlyRoot>[A-G])(?<bassOnlyAcc>[#b]?))$/;
 
 function norm(t){
   return t.normalize('NFKC')
@@ -357,7 +357,7 @@ const $ = id => document.getElementById(id);
   };
   const fallback = () => {
     const d = new Date(document.lastModified);
-    el.textContent = isNaN(d) ? 'probe-v6.9 · build (알 수 없음)' : 'probe-v6.9 · build ' + fmt(d);
+    el.textContent = isNaN(d) ? 'probe-v7.0 · build (알 수 없음)' : 'probe-v7.0 · build ' + fmt(d);
   };
   fetch(location.href, { method: 'HEAD', cache: 'no-store' })
     .then(res => {
@@ -365,7 +365,7 @@ const $ = id => document.getElementById(id);
       if(!lm) return fallback();
       const d = new Date(lm);
       if(isNaN(d)) return fallback();
-      el.textContent = 'probe-v6.9 · build ' + fmt(d);
+      el.textContent = 'probe-v7.0 · build ' + fmt(d);
     })
     .catch(fallback);
 })();
@@ -1516,34 +1516,52 @@ async function readBeamCleanPass(session,srcImage,srcW,srcH,boxes,indices){
 // v6.8에서는 이 로직이 beam-clean 및 invalid-retry보다 앞에 있어서
 // 고친 값이 다시 덮어써지거나, retry 뒤에 생긴 /A를 아예 보지 못하는 순서 버그가 있었다.
 async function finalTargetedRescue(session, srcImage, srcW, srcH, boxes, base){
-  // 1) X(13) -> X7(9,13)
-  // aspect 조건을 두지 않는다. 최종값이 정확히 X(13)인 경우에만 검사한다.
+  // probe-v7.0
+  // 핵심 변경 1: CHORD_RE가 이제 comma를 허용하므로 A7(9,13) 같은 tension 코드가
+  // 실제 정상 코드로 통과할 수 있다.
+  //
+  // 핵심 변경 2: 한 crop에서 전체 문자열을 강요하지 않고,
+  // X(13)인 경우 (9) 부분증거 + 7(13) 부분증거를 서로 다른 crop에서 결합한다.
   for(let i=0;i<boxes.length;i++){
     const cur=norm(base.texts[i]||'');
     const mm=/^([A-G][#b]?)\(13\)$/.exec(cur);
     if(!mm) continue;
+
     const root=mm[1], b=boxes[i], h=Math.max(1,b.y1-b.y0);
 
-    // 좌우를 서로 다르게 본다. 한 crop이 (9), 다른 crop이 7(13)을 읽는
-    // 실제 관찰을 그대로 이용해 두 부분 증거를 결합한다.
-    const rects=[
-      {x0:b.x0-1.80*h,y0:b.y0-0.50*h,x1:b.x1+0.20*h,y1:b.y1+0.35*h},
-      {x0:b.x0-1.55*h,y0:b.y0-0.40*h,x1:b.x1+0.35*h,y1:b.y1+0.35*h},
-      {x0:b.x0-0.65*h,y0:b.y0-0.40*h,x1:b.x1+0.90*h,y1:b.y1+0.35*h},
-      {x0:b.x0-0.35*h,y0:b.y0-0.35*h,x1:b.x1+1.10*h,y1:b.y1+0.35*h},
-      {x0:b.x0-1.25*h,y0:b.y0-0.35*h,x1:b.x1+0.80*h,y1:b.y1+0.35*h}
+    // 실제 사랑합니다 A7(9,13)에서 9를 안정적으로 보이는 crop 군.
+    const nineRects=[
+      {x0:b.x0-0.50*h,y0:b.y0-0.10*h,x1:b.x1+1.25*h,y1:b.y1+0.30*h},
+      {x0:b.x0-0.75*h,y0:b.y0-0.10*h,x1:b.x1+1.00*h,y1:b.y1+0.30*h},
+      {x0:b.x0-1.25*h,y0:b.y0-0.10*h,x1:b.x1+1.25*h,y1:b.y1+0.40*h},
+      {x0:b.x0-0.75*h,y0:b.y0-0.25*h,x1:b.x1+1.00*h,y1:b.y1+0.40*h}
     ];
-    const rr=await readRectPass(session,srcImage,srcW,srcH,rects);
 
-    let has9=false, has7_13=false, whole=false;
-    for(const q0 of rr.texts){
+    // 7(13)은 원래 박스 및 약간의 우측 확장에서 안정적으로 보인다.
+    const tailRects=[
+      {x0:b.x0-0.10*h,y0:b.y0-0.40*h,x1:b.x1+0.25*h,y1:b.y1+0.10*h},
+      {x0:b.x0-0.10*h,y0:b.y0-0.40*h,x1:b.x1+0.50*h,y1:b.y1+0.10*h},
+      {x0:b.x0-0.10*h,y0:b.y0-0.25*h,x1:b.x1+0.50*h,y1:b.y1+0.25*h}
+    ];
+
+    const nr=await readRectPass(session,srcImage,srcW,srcH,nineRects);
+    const tr=await readRectPass(session,srcImage,srcW,srcH,tailRects);
+
+    let ev9=0, evTail=0, evWhole=0;
+    for(const q0 of nr.texts){
       const q=norm(q0||'');
       if(!q.startsWith(root)) continue;
-      if(q===root+'7(9,13)' || q===root+'(9,13)') whole=true;
-      if(/\(9\)$/.test(q) || /\(9,13\)$/.test(q)) has9=true;
-      if(q===root+'7(13)' || q===root+'7(b13)' || q===root+'7(9,13)') has7_13=true;
+      if(q===root+'7(9,13)' || q===root+'(9,13)') evWhole++;
+      if(/\(9\)$/.test(q) || /\(9,13\)$/.test(q) || /7\(9\)$/.test(q)) ev9++;
     }
-    if(whole || (has9 && has7_13)){
+    for(const q0 of tr.texts){
+      const q=norm(q0||'');
+      if(!q.startsWith(root)) continue;
+      if(q===root+'7(9,13)') evWhole++;
+      if(q===root+'7(13)' || q===root+'7(b13)' || q===root+'7(9,13)') evTail++;
+    }
+
+    if(evWhole>=1 || (ev9>=1 && evTail>=1)){
       const cand=root+'7(9,13)';
       if(isChordLike(cand)){
         base.texts[i]=cand;
@@ -1552,29 +1570,38 @@ async function finalTargetedRescue(session, srcImage, srcW, srcH, boxes, base){
     }
   }
 
-  // 2) /X -> /X# 또는 /Xb
-  // invalid-retry까지 모두 끝난 "최종 /X"에 대해 오른쪽 accidental만 확인한다.
+  // bass-only accidental rescue.
+  // 이전 v6.9는 위/아래를 모두 크게 넓혀 #이 세로로 눌려 /A가 되는 문제가 있었다.
+  // 실제 픽셀 스윕에서 "위쪽 0.25~0.40h 확장 + 아래쪽 거의 0"일 때 /A#이 안정적이었다.
   for(let i=0;i<boxes.length;i++){
     const cur=norm(base.texts[i]||'');
     const mm=/^\/([A-G])$/.exec(cur);
     if(!mm) continue;
-    const root=mm[1], b=boxes[i], h=Math.max(1,b.y1-b.y0);
 
-    // 오른쪽 작은 # 성분 위치가 박스마다 달라 여러 비대칭 폭을 스윕.
-    const rects=[0.35,0.50,0.65,0.80,1.00,1.20,1.45].map(r=>({
-      x0:b.x0-0.12*h, y0:b.y0-0.45*h,
-      x1:b.x1+r*h,    y1:b.y1+0.45*h
-    }));
+    const root=mm[1], b=boxes[i], h=Math.max(1,b.y1-b.y0);
+    const rects=[];
+    for(const top of [0.20,0.25,0.30,0.40]){
+      for(const right of [0.75,1.00,1.25,1.50]){
+        rects.push({
+          x0:b.x0,
+          y0:b.y0-top*h,
+          x1:b.x1+right*h,
+          y1:b.y1
+        });
+      }
+    }
+
     const rr=await readRectPass(session,srcImage,srcW,srcH,rects);
     const votes=new Map();
     for(const q0 of rr.texts){
       const q=norm(q0||'');
-      if(q===`/${root}#` || q===`/${root}b`) votes.set(q,(votes.get(q)||0)+1);
+      if(q===`/${root}#` || q===`/${root}b`)
+        votes.set(q,(votes.get(q)||0)+1);
     }
-    const best=[...votes.entries()].sort((a,b)=>b[1]-a[1])[0];
 
-    // 7개 서로 다른 폭 가운데 2개 이상에서 같은 accidental이 확인될 때만 채택.
-    if(best && best[1]>=2 && isChordLike(best[0])){
+    const best=[...votes.entries()].sort((a,b)=>b[1]-a[1])[0];
+    // 16개 crop 중 3개 이상 동의해야 accidental을 추가.
+    if(best && best[1]>=3 && isChordLike(best[0])){
       base.texts[i]=best[0];
       base.confidences[i]=Math.max(base.confidences[i]||0,0.60);
     }
