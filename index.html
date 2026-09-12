@@ -125,7 +125,7 @@
 <header>
   <h1><span class="flat">♭</span> 코드 이조기</h1>
   <span class="sub">악보 이미지의 코드를 인식해 원하는 조성으로 일괄 변환</span>
-  <span class="sub" style="margin-left:auto; font-family:Georgia,serif; color:var(--pencil);" id="buildStamp">probe-v7.14 · build …</span>
+  <span class="sub" style="margin-left:auto; font-family:Georgia,serif; color:var(--pencil);" id="buildStamp">probe-v7.16 · build …</span>
 </header>
 
 <div class="layout">
@@ -357,7 +357,7 @@ const $ = id => document.getElementById(id);
   };
   const fallback = () => {
     const d = new Date(document.lastModified);
-    el.textContent = isNaN(d) ? 'probe-v7.14 · build (알 수 없음)' : 'probe-v7.14 · build ' + fmt(d);
+    el.textContent = isNaN(d) ? 'probe-v7.16 · build (알 수 없음)' : 'probe-v7.16 · build ' + fmt(d);
   };
   fetch(location.href, { method: 'HEAD', cache: 'no-store' })
     .then(res => {
@@ -365,7 +365,7 @@ const $ = id => document.getElementById(id);
       if(!lm) return fallback();
       const d = new Date(lm);
       if(isNaN(d)) return fallback();
-      el.textContent = 'probe-v7.14 · build ' + fmt(d);
+      el.textContent = 'probe-v7.16 · build ' + fmt(d);
     })
     .catch(fallback);
 })();
@@ -1828,6 +1828,65 @@ async function finalTargetedRescue(session, srcImage, srcW, srcH, boxes, base){
   await rescueAttachedTailSlash(session,srcImage,srcW,srcH,boxes,base);
 }
 
+// probe-v7.15: 넓은 코드 박스의 slash-bass 부분합의 복구.
+// .05가 완전한 slash chord, .10이 같은 root/quality와 slash까지 읽은 경우에만
+// 완전 판독의 bass를 채택한다. 두 crop 모두 확신도 0.80 이상이어야 한다.
+async function rescuePartialSlashConsensus(session,srcImage,srcW,srcH,boxes,base){
+  const idx=[];
+  for(let i=0;i<boxes.length;i++){
+    const cur=base.texts[i]||'';
+    if(!isChordLike(cur) || cur.includes('/')) continue;
+    const b=boxes[i],asp=(b.x1-b.x0)/Math.max(1,b.y1-b.y0);
+    if(asp>=2.80) idx.push(i);
+  }
+  if(!idx.length) return;
+  const q05=await readPass(session,srcImage,srcW,srcH,idx.map(i=>boxes[i]),0.05);
+  const q10=await readPass(session,srcImage,srcW,srcH,idx.map(i=>boxes[i]),0.10);
+  for(let k=0;k<idx.length;k++){
+    const i=idx[k],cur=base.texts[i]||'',full=q05.texts[k]||'',partial=q10.texts[k]||'';
+    if((q05.confidences[k]||0)<0.80 || (q10.confidences[k]||0)<0.80 || partial!==cur+'/') continue;
+    const m=/^([A-G][#b]?)([^/]*)\/([A-G][#b]?)$/.exec(full);
+    if(!m || m[1]+m[2]!==cur || m[1]===m[3] || !isChordLike(full)) continue;
+    base.texts[i]=full;
+    base.confidences[i]=Math.max(base.confidences[i]||0,q05.confidences[k]||0,q10.confidences[k]||0);
+  }
+}
+
+// probe-v7.16: bass-only slash 코드에서 누락된 왼쪽 root/quality 복구.
+// 서로 다른 비대칭 crop 3개 이상이 같은 완전 slash chord를 읽고, slash 앞부분이
+// 같은 악보의 다른 박스에서도 정상 코드로 확인될 때만 채택한다. 음표선의 일부를
+// 코드로 읽은 후보를 막기 위해 큰 세로 여백에서 2표 이상, 작은 세로 여백에서 0표를 요구한다.
+async function rescueBassOnlyRootConsensus(session,srcImage,srcW,srcH,boxes,base){
+  const idx=[];
+  for(let i=0;i<boxes.length;i++) if(/^\/[A-G][#b]?$/.test(base.texts[i]||'')) idx.push(i);
+  if(!idx.length)return;
+  const vocab=new Map();
+  for(const t of base.texts) if(isChordLike(t)) vocab.set(t,(vocab.get(t)||0)+1);
+  for(const i of idx){
+    const b=boxes[i],h=Math.max(1,b.y1-b.y0),bass=(base.texts[i]||'').slice(1),rects=[];
+    for(const ypad of [0.15,0.35,0.60]) for(const left of [1.0,1.5,2.0,2.5,3.0])
+      rects.push({x0:b.x0-left*h,y0:b.y0-ypad*h,x1:b.x1+0.20*h,y1:b.y1+ypad*h,left,ypad});
+    const rr=await readRectPass(session,srcImage,srcW,srcH,rects),stats=new Map();
+    for(let k=0;k<rr.texts.length;k++){
+      const q=norm(rr.texts[k]||''),conf=rr.confidences[k]||0;
+      if(conf<0.80 || !isChordLike(q))continue;
+      const m=/^([A-G][#b]?)([^/]*)\/([A-G][#b]?)$/.exec(q);
+      if(!m || m[3]!==bass || m[1]===m[3])continue;
+      const prefix=m[1]+m[2];
+      if((vocab.get(prefix)||0)<1)continue;
+      const s=stats.get(q)||{count:0,wideY:0,shallowY:0,minLeft:Infinity,maxConf:0};
+      s.count++;if(rects[k].ypad===0.60)s.wideY++;if(rects[k].ypad===0.15)s.shallowY++;
+      s.minLeft=Math.min(s.minLeft,rects[k].left);s.maxConf=Math.max(s.maxConf,conf);stats.set(q,s);
+    }
+    const ranked=[...stats.entries()].sort((a,b)=>b[1].count-a[1].count||a[1].minLeft-b[1].minLeft||b[1].maxConf-a[1].maxConf);
+    const best=ranked[0];
+    if(best&&best[1].count>=3&&best[1].wideY>=2&&best[1].shallowY===0){
+      base.texts[i]=best[0];
+      base.confidences[i]=Math.max(base.confidences[i]||0,best[1].maxConf);
+    }
+  }
+}
+
 async function recognizeBoxesWithModel(srcImage, srcW, srcH, boxes){
   inkReadCache = new WeakMap();
   if(boxes.length === 0) return { texts: [], confidences: [] };
@@ -2573,7 +2632,9 @@ async function recognizeBoxesWithModel(srcImage, srcW, srcH, boxes){
   const bad = [];
   for(let i = 0; i < boxes.length; i++) if(!boxes[i].attachedRejected && !isChordLike(base.texts[i])) bad.push(i);
   if(bad.length === 0){
+    await rescuePartialSlashConsensus(session,srcImage,srcW,srcH,boxes,base);
     await finalTargetedRescue(session,srcImage,srcW,srcH,boxes,base);
+    await rescueBassOnlyRootConsensus(session,srcImage,srcW,srcH,boxes,base);
     return base;
   }
 
@@ -2606,7 +2667,9 @@ async function recognizeBoxesWithModel(srcImage, srcW, srcH, boxes){
     base.texts[i] = bestT;
     base.confidences[i] = Math.max(base.confidences[i] || 0, 0.5);
   }
+  await rescuePartialSlashConsensus(session,srcImage,srcW,srcH,boxes,base);
   await finalTargetedRescue(session,srcImage,srcW,srcH,boxes,base);
+  await rescueBassOnlyRootConsensus(session,srcImage,srcW,srcH,boxes,base);
   return base;
 }
 
