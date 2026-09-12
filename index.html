@@ -119,6 +119,33 @@
   .citem .del:hover{color:var(--pencil);}
   .empty{color:var(--muted); font-size:13px; text-align:center; padding:14px 0;}
   .hint{font-size:12px; color:var(--muted); line-height:1.6; margin-top:8px;}
+  body.modal-open{overflow:hidden;}
+  .pdf-picker{position:fixed; inset:0; z-index:1000; display:none; align-items:center; justify-content:center;
+    padding:18px; background:rgba(7,9,13,.78); backdrop-filter:blur(3px);}
+  .pdf-picker.open{display:flex;}
+  .pdf-dialog{width:min(560px,100%); max-height:calc(100vh - 36px); overflow:auto;
+    background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:18px;
+    box-shadow:0 20px 70px rgba(0,0,0,.48);}
+  .pdf-dialog h2{font-size:17px; margin-bottom:5px;}
+  .pdf-file-info{font-size:12px; color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+  .pdf-preview{height:min(52vh,560px); min-height:220px; margin:14px 0 12px; padding:10px;
+    display:flex; align-items:center; justify-content:center; position:relative; overflow:hidden;
+    background:#3a3d45; border:1px solid var(--line); border-radius:8px;}
+  #pdfPreviewCanvas{display:block; max-width:100%; max-height:100%; background:#fff; box-shadow:0 2px 10px rgba(0,0,0,.35);}
+  #pdfPreviewStatus{position:absolute; inset:auto 12px 12px; padding:5px 9px; border-radius:5px;
+    background:rgba(20,22,28,.84); color:var(--text); font-size:12px; display:none;}
+  .pdf-page-controls{display:flex; align-items:center; justify-content:center; gap:9px;}
+  .pdf-page-controls input[type=number]{width:70px; background:var(--panel2); border:1px solid var(--line);
+    color:var(--text); border-radius:6px; padding:8px; font-size:15px; text-align:center;}
+  .pdf-page-controls input[type=number]:focus{outline:2px solid var(--pencil);}
+  #pdfPageSlider{width:100%; margin:12px 0 4px; accent-color:var(--pencil);}
+  .pdf-actions{display:flex; justify-content:flex-end; gap:8px; margin-top:14px;}
+  @media(max-width:600px){
+    .pdf-picker{padding:10px; align-items:flex-end;}
+    .pdf-dialog{max-height:92vh; border-radius:12px 12px 8px 8px; padding:14px;}
+    .pdf-preview{height:48vh; min-height:200px;}
+    .pdf-actions .btn{flex:1;}
+  }
   @media(prefers-reduced-motion:reduce){ *{transition:none!important;} }
 </style>
 </head>
@@ -126,7 +153,7 @@
 <header>
   <h1><span class="flat">♭</span> 코드 이조기</h1>
   <span class="sub">악보 이미지의 코드를 인식해 원하는 조성으로 일괄 변환</span>
-  <span class="sub" style="margin-left:auto; font-family:Georgia,serif; color:var(--pencil);" id="buildStamp">probe-v7.18 · build …</span>
+  <span class="sub" style="margin-left:auto; font-family:Georgia,serif; color:var(--pencil);" id="buildStamp">probe-v7.19 · build …</span>
 </header>
 
 <div class="layout">
@@ -216,6 +243,28 @@
     <div class="card">
       <h2>4 · 내보내기</h2>
       <button class="btn accent" id="btnSave" style="width:100%" disabled>PNG로 저장</button>
+    </div>
+  </div>
+</div>
+
+<div class="pdf-picker" id="pdfPicker" role="dialog" aria-modal="true" aria-labelledby="pdfPickerTitle" aria-hidden="true">
+  <div class="pdf-dialog">
+    <h2 id="pdfPickerTitle">PDF 페이지 선택</h2>
+    <div class="pdf-file-info" id="pdfFileInfo"></div>
+    <div class="pdf-preview">
+      <canvas id="pdfPreviewCanvas"></canvas>
+      <div id="pdfPreviewStatus">미리보기 준비 중…</div>
+    </div>
+    <div class="pdf-page-controls">
+      <button class="btn" id="pdfPrev" type="button" aria-label="이전 페이지">← 이전</button>
+      <label><input id="pdfPageNumber" type="number" min="1" value="1" inputmode="numeric" aria-label="PDF 페이지 번호"></label>
+      <span id="pdfPageTotal">/ 1</span>
+      <button class="btn" id="pdfNext" type="button" aria-label="다음 페이지">다음 →</button>
+    </div>
+    <input id="pdfPageSlider" type="range" min="1" max="1" value="1" aria-label="PDF 페이지 선택 슬라이더">
+    <div class="pdf-actions">
+      <button class="btn" id="pdfCancel" type="button">취소</button>
+      <button class="btn accent" id="pdfOpen" type="button">이 페이지 불러오기</button>
     </div>
   </div>
 </div>
@@ -359,7 +408,7 @@ const $ = id => document.getElementById(id);
   };
   const fallback = () => {
     const d = new Date(document.lastModified);
-    el.textContent = isNaN(d) ? 'probe-v7.18 · build (알 수 없음)' : 'probe-v7.18 · build ' + fmt(d);
+    el.textContent = isNaN(d) ? 'probe-v7.19 · build (알 수 없음)' : 'probe-v7.19 · build ' + fmt(d);
   };
   fetch(location.href, { method: 'HEAD', cache: 'no-store' })
     .then(res => {
@@ -367,47 +416,145 @@ const $ = id => document.getElementById(id);
       if(!lm) return fallback();
       const d = new Date(lm);
       if(isNaN(d)) return fallback();
-      el.textContent = 'probe-v7.18 · build ' + fmt(d);
+      el.textContent = 'probe-v7.19 · build ' + fmt(d);
     })
     .catch(fallback);
 })();
 const drop=$('drop'), filePicker=$('filePicker'), imgWrap=$('imgWrap'), srcImg=$('srcImg'), outCanvas=$('outCanvas');
 const statusEl=$('status'), progWrap=$('progress'), progBar=progWrap.querySelector('i');
+const pdfPicker=$('pdfPicker'), pdfPreviewCanvas=$('pdfPreviewCanvas');
+const pdfPageNumber=$('pdfPageNumber'), pdfPageSlider=$('pdfPageSlider');
+let pendingPdf=null, pendingPdfName='', pdfPreviewSeq=0, pdfPreviewTask=null;
 
 /* ==================== 이미지 로드 ==================== */
 // PDF 는 그림 파일이 아니라 문서라서 바로 <img> 에 넣을 수 없다.
-// PDF.js 로 첫 페이지를 캔버스에 그려 이미지로 바꾼 뒤 기존 경로에 넘긴다.
+// 여러 페이지면 미리보기에서 원하는 쪽을 고른 뒤 이미지로 바꿔 기존 경로에 넘긴다.
+function clampPdfPage(value){
+  const max=pendingPdf ? pendingPdf.numPages : 1;
+  return Math.max(1,Math.min(max,Math.round(Number(value)||1)));
+}
+
+function updatePdfPageControls(value){
+  const pageNo=clampPdfPage(value), max=pendingPdf ? pendingPdf.numPages : 1;
+  pdfPageNumber.value=String(pageNo);
+  pdfPageNumber.max=String(max);
+  pdfPageSlider.max=String(max);
+  pdfPageSlider.value=String(pageNo);
+  $('pdfPageTotal').textContent=`/ ${max}`;
+  $('pdfPrev').disabled=pageNo<=1;
+  $('pdfNext').disabled=pageNo>=max;
+  return pageNo;
+}
+
+async function renderPdfPreview(value){
+  if(!pendingPdf)return;
+  const pageNo=updatePdfPageControls(value), seq=++pdfPreviewSeq;
+  const msg=$('pdfPreviewStatus');
+  msg.textContent='미리보기 준비 중…';msg.style.display='block';
+  if(pdfPreviewTask){try{pdfPreviewTask.cancel();}catch(_){}}
+  try{
+    const page=await pendingPdf.getPage(pageNo);
+    if(seq!==pdfPreviewSeq)return;
+    const base=page.getViewport({scale:1});
+    const maxW=Math.min(500,Math.max(260,window.innerWidth-70));
+    const maxH=Math.min(540,Math.max(200,window.innerHeight*0.48));
+    const scale=Math.min(1.35,maxW/base.width,maxH/base.height);
+    const vp=page.getViewport({scale});
+    pdfPreviewCanvas.width=Math.max(1,Math.round(vp.width));
+    pdfPreviewCanvas.height=Math.max(1,Math.round(vp.height));
+    const ctx=pdfPreviewCanvas.getContext('2d');
+    ctx.fillStyle='#fff';ctx.fillRect(0,0,pdfPreviewCanvas.width,pdfPreviewCanvas.height);
+    pdfPreviewTask=page.render({canvasContext:ctx,viewport:vp});
+    await pdfPreviewTask.promise;
+    if(seq===pdfPreviewSeq)msg.style.display='none';
+  }catch(err){
+    if(err && err.name==='RenderingCancelledException')return;
+    if(seq===pdfPreviewSeq){msg.textContent='미리보기를 표시하지 못했습니다.';msg.style.display='block';}
+  }finally{
+    if(seq===pdfPreviewSeq)pdfPreviewTask=null;
+  }
+}
+
+function showPdfPicker(pdf,fileName){
+  pendingPdf=pdf;pendingPdfName=fileName||'score.pdf';
+  $('pdfFileInfo').textContent=`${pendingPdfName} · 총 ${pdf.numPages}페이지`;
+  pdfPicker.classList.add('open');pdfPicker.setAttribute('aria-hidden','false');
+  document.body.classList.add('modal-open');
+  updatePdfPageControls(1);renderPdfPreview(1);
+  setTimeout(()=>pdfPageNumber.focus(),0);
+}
+
+function closePdfPicker(message){
+  pdfPreviewSeq++;
+  if(pdfPreviewTask){try{pdfPreviewTask.cancel();}catch(_){}}
+  pdfPreviewTask=null;
+  const pdf=pendingPdf;pendingPdf=null;pendingPdfName='';
+  pdfPicker.classList.remove('open');pdfPicker.setAttribute('aria-hidden','true');
+  document.body.classList.remove('modal-open');
+  if(pdf && pdf.destroy)Promise.resolve(pdf.destroy()).catch(()=>{});
+  if(message)setStatus(message);
+}
+
 // 해상도는 인식에 충분하도록 넉넉히 잡되(2.5배), 너무 큰 페이지는 상한을 둔다.
+async function importPdfPage(pdf,pageNo,fileName){
+  const page=await pdf.getPage(pageNo);
+  let scale=2.5;
+  const base=page.getViewport({scale:1});
+  const longest=Math.max(base.width,base.height);
+  if(longest*scale>3500)scale=3500/longest;
+  const vp=page.getViewport({scale});
+  const cv=document.createElement('canvas');
+  cv.width=Math.round(vp.width);cv.height=Math.round(vp.height);
+  const cctx=cv.getContext('2d');
+  cctx.fillStyle='#fff';cctx.fillRect(0,0,cv.width,cv.height);
+  await page.render({canvasContext:cctx,viewport:vp}).promise;
+  const blob=await new Promise(resolve=>cv.toBlob(resolve,'image/png'));
+  if(!blob)throw new Error('PDF 페이지 이미지 변환 실패');
+  const baseName=(fileName||'score.pdf').replace(/\.pdf$/i,'');
+  loadFile(new File([blob],`${baseName}-p${pageNo}.png`,{type:'image/png'}));
+}
+
 async function loadPdf(file){
   if(!window.pdfjsLib){ setStatus('PDF 라이브러리를 불러오지 못했습니다 (인터넷 연결 확인).'); return; }
   try{
-    setStatus('PDF를 이미지로 변환하는 중…');
+    setStatus('PDF를 읽는 중…');
     pdfjsLib.GlobalWorkerOptions.workerSrc =
       'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
     const buf = await file.arrayBuffer();
     const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
     if(pdf.numPages > 1){
-      setStatus(`PDF ${pdf.numPages}쪽 중 1쪽만 불러옵니다.`);
+      showPdfPicker(pdf,file.name);
+      setStatus(`PDF ${pdf.numPages}페이지 중 불러올 페이지를 선택하세요.`);
+      return;
     }
-    const page = await pdf.getPage(1);
-    let scale = 2.5;
-    const base = page.getViewport({ scale: 1 });
-    const longest = Math.max(base.width, base.height);
-    if(longest * scale > 3500) scale = 3500 / longest;   // 과도한 메모리 사용 방지
-    const vp = page.getViewport({ scale });
-    const cv = document.createElement('canvas');
-    cv.width = Math.round(vp.width); cv.height = Math.round(vp.height);
-    const cctx = cv.getContext('2d');
-    cctx.fillStyle = '#fff'; cctx.fillRect(0, 0, cv.width, cv.height);
-    await page.render({ canvasContext: cctx, viewport: vp }).promise;
-    cv.toBlob(b=>{
-      if(!b){ setStatus('PDF 변환에 실패했습니다.'); return; }
-      loadFile(new File([b], (file.name||'score').replace(/\.pdf$/i,'') + '.png', { type:'image/png' }));
-    }, 'image/png');
+    setStatus('PDF 1페이지를 이미지로 변환하는 중…');
+    await importPdfPage(pdf,1,file.name);
+    if(pdf.destroy)await pdf.destroy();
   }catch(err){
     setStatus('PDF를 읽지 못했습니다: ' + (err && err.message ? err.message : err));
   }
 }
+
+$('pdfPrev').addEventListener('click',()=>renderPdfPreview(clampPdfPage(pdfPageNumber.value)-1));
+$('pdfNext').addEventListener('click',()=>renderPdfPreview(clampPdfPage(pdfPageNumber.value)+1));
+pdfPageNumber.addEventListener('change',()=>renderPdfPreview(pdfPageNumber.value));
+pdfPageSlider.addEventListener('input',()=>renderPdfPreview(pdfPageSlider.value));
+$('pdfCancel').addEventListener('click',()=>closePdfPicker('PDF 불러오기를 취소했습니다.'));
+$('pdfOpen').addEventListener('click',async()=>{
+  if(!pendingPdf)return;
+  const button=$('pdfOpen'), pdf=pendingPdf, name=pendingPdfName, pageNo=clampPdfPage(pdfPageNumber.value);
+  button.disabled=true;setStatus(`PDF ${pageNo}페이지를 이미지로 변환하는 중…`);
+  try{
+    if(pdfPreviewTask){try{pdfPreviewTask.cancel();}catch(_){}}
+    pdfPreviewTask=null;pdfPreviewSeq++;
+    await importPdfPage(pdf,pageNo,name);
+    closePdfPicker();
+  }catch(err){
+    setStatus('PDF 페이지를 읽지 못했습니다: '+(err&&err.message?err.message:err));
+  }finally{button.disabled=false;}
+});
+pdfPicker.addEventListener('click',e=>{if(e.target===pdfPicker)closePdfPicker('PDF 불러오기를 취소했습니다.');});
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&pdfPicker.classList.contains('open'))closePdfPicker('PDF 불러오기를 취소했습니다.');});
 
 function loadFile(file){
   if(!file){ setStatus('파일이 없습니다.'); return; }
