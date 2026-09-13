@@ -47,6 +47,7 @@
     .stage-body{overflow:visible; min-height:340px;}
   }
   .drop{border:1.5px dashed var(--line); border-radius:8px; width:100%; min-height:320px; display:flex; flex-direction:column; gap:10px; align-items:center; justify-content:center; color:var(--muted); cursor:pointer; text-align:center; padding:20px;}
+  .file-picker{position:fixed; left:-10px; top:-10px; width:1px; height:1px; opacity:0; pointer-events:none;}
   .drop.hover{border-color:var(--pencil); background:var(--pencil-soft);}
   /* 이미 악보가 열린 상태에서 새 파일을 끌어올 때의 표시 */
   .stageCol.dropOver{outline:3px dashed var(--pencil); outline-offset:-4px; border-radius:10px;}
@@ -118,6 +119,33 @@
   .citem .del:hover{color:var(--pencil);}
   .empty{color:var(--muted); font-size:13px; text-align:center; padding:14px 0;}
   .hint{font-size:12px; color:var(--muted); line-height:1.6; margin-top:8px;}
+  body.modal-open{overflow:hidden;}
+  .pdf-picker{position:fixed; inset:0; z-index:1000; display:none; align-items:center; justify-content:center;
+    padding:18px; background:rgba(7,9,13,.78); backdrop-filter:blur(3px);}
+  .pdf-picker.open{display:flex;}
+  .pdf-dialog{width:min(560px,100%); max-height:calc(100vh - 36px); overflow:auto;
+    background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:18px;
+    box-shadow:0 20px 70px rgba(0,0,0,.48);}
+  .pdf-dialog h2{font-size:17px; margin-bottom:5px;}
+  .pdf-file-info{font-size:12px; color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+  .pdf-preview{height:min(52vh,560px); min-height:220px; margin:14px 0 12px; padding:10px;
+    display:flex; align-items:center; justify-content:center; position:relative; overflow:hidden;
+    background:#3a3d45; border:1px solid var(--line); border-radius:8px;}
+  #pdfPreviewCanvas{display:block; max-width:100%; max-height:100%; background:#fff; box-shadow:0 2px 10px rgba(0,0,0,.35);}
+  #pdfPreviewStatus{position:absolute; inset:auto 12px 12px; padding:5px 9px; border-radius:5px;
+    background:rgba(20,22,28,.84); color:var(--text); font-size:12px; display:none;}
+  .pdf-page-controls{display:flex; align-items:center; justify-content:center; gap:9px;}
+  .pdf-page-controls input[type=number]{width:70px; background:var(--panel2); border:1px solid var(--line);
+    color:var(--text); border-radius:6px; padding:8px; font-size:15px; text-align:center;}
+  .pdf-page-controls input[type=number]:focus{outline:2px solid var(--pencil);}
+  #pdfPageSlider{width:100%; margin:12px 0 4px; accent-color:var(--pencil);}
+  .pdf-actions{display:flex; justify-content:flex-end; gap:8px; margin-top:14px;}
+  @media(max-width:600px){
+    .pdf-picker{padding:10px; align-items:flex-end;}
+    .pdf-dialog{max-height:92vh; border-radius:12px 12px 8px 8px; padding:14px;}
+    .pdf-preview{height:48vh; min-height:200px;}
+    .pdf-actions .btn{flex:1;}
+  }
   @media(prefers-reduced-motion:reduce){ *{transition:none!important;} }
 </style>
 </head>
@@ -125,7 +153,7 @@
 <header>
   <h1><span class="flat">♭</span> 코드 이조기</h1>
   <span class="sub">악보 이미지의 코드를 인식해 원하는 조성으로 일괄 변환</span>
-  <span class="sub" style="margin-left:auto; font-family:Georgia,serif; color:var(--pencil);" id="buildStamp">probe-v7.16 · build …</span>
+  <span class="sub" style="margin-left:auto; font-family:Georgia,serif; color:var(--pencil);" id="buildStamp">probe-v7.36 · build …</span>
 </header>
 
 <div class="layout">
@@ -137,10 +165,11 @@
       <button id="tabResult">② 결과 미리보기</button>
     </div>
     <div class="stage-body empty">
-      <div class="drop" id="drop" tabindex="0">
+      <label class="drop" id="drop" for="filePicker" tabindex="0" role="button">
         <div class="big">악보 이미지를 여기에 놓거나 클릭해서 선택</div>
         <div>PNG · JPG · PDF 지원 &nbsp;|&nbsp; <kbd>Ctrl</kbd>+<kbd>V</kbd> 붙여넣기 가능</div>
-      </div>
+      </label>
+      <input class="file-picker" id="filePicker" type="file" accept="image/*,.pdf,application/pdf" aria-label="악보 파일 선택">
       <div id="imgWrap">
         <img id="srcImg" alt="원본 악보">
       </div>
@@ -214,6 +243,28 @@
     <div class="card">
       <h2>4 · 내보내기</h2>
       <button class="btn accent" id="btnSave" style="width:100%" disabled>PNG로 저장</button>
+    </div>
+  </div>
+</div>
+
+<div class="pdf-picker" id="pdfPicker" role="dialog" aria-modal="true" aria-labelledby="pdfPickerTitle" aria-hidden="true">
+  <div class="pdf-dialog">
+    <h2 id="pdfPickerTitle">PDF 페이지 선택</h2>
+    <div class="pdf-file-info" id="pdfFileInfo"></div>
+    <div class="pdf-preview">
+      <canvas id="pdfPreviewCanvas"></canvas>
+      <div id="pdfPreviewStatus">미리보기 준비 중…</div>
+    </div>
+    <div class="pdf-page-controls">
+      <button class="btn" id="pdfPrev" type="button" aria-label="이전 페이지">← 이전</button>
+      <label><input id="pdfPageNumber" type="number" min="1" value="1" inputmode="numeric" aria-label="PDF 페이지 번호"></label>
+      <span id="pdfPageTotal">/ 1</span>
+      <button class="btn" id="pdfNext" type="button" aria-label="다음 페이지">다음 →</button>
+    </div>
+    <input id="pdfPageSlider" type="range" min="1" max="1" value="1" aria-label="PDF 페이지 선택 슬라이더">
+    <div class="pdf-actions">
+      <button class="btn" id="pdfCancel" type="button">취소</button>
+      <button class="btn accent" id="pdfOpen" type="button">이 페이지 불러오기</button>
     </div>
   </div>
 </div>
@@ -357,7 +408,7 @@ const $ = id => document.getElementById(id);
   };
   const fallback = () => {
     const d = new Date(document.lastModified);
-    el.textContent = isNaN(d) ? 'probe-v7.16 · build (알 수 없음)' : 'probe-v7.16 · build ' + fmt(d);
+    el.textContent = isNaN(d) ? 'probe-v7.36 · build (알 수 없음)' : 'probe-v7.36 · build ' + fmt(d);
   };
   fetch(location.href, { method: 'HEAD', cache: 'no-store' })
     .then(res => {
@@ -365,52 +416,153 @@ const $ = id => document.getElementById(id);
       if(!lm) return fallback();
       const d = new Date(lm);
       if(isNaN(d)) return fallback();
-      el.textContent = 'probe-v7.16 · build ' + fmt(d);
+      el.textContent = 'probe-v7.36 · build ' + fmt(d);
     })
     .catch(fallback);
 })();
-const drop=$('drop'), imgWrap=$('imgWrap'), srcImg=$('srcImg'), outCanvas=$('outCanvas');
+const drop=$('drop'), filePicker=$('filePicker'), imgWrap=$('imgWrap'), srcImg=$('srcImg'), outCanvas=$('outCanvas');
 const statusEl=$('status'), progWrap=$('progress'), progBar=progWrap.querySelector('i');
+const pdfPicker=$('pdfPicker'), pdfPreviewCanvas=$('pdfPreviewCanvas');
+const pdfPageNumber=$('pdfPageNumber'), pdfPageSlider=$('pdfPageSlider');
+let pendingPdf=null, pendingPdfName='', pdfPreviewSeq=0, pdfPreviewTask=null;
 
 /* ==================== 이미지 로드 ==================== */
 // PDF 는 그림 파일이 아니라 문서라서 바로 <img> 에 넣을 수 없다.
-// PDF.js 로 첫 페이지를 캔버스에 그려 이미지로 바꾼 뒤 기존 경로에 넘긴다.
+// 여러 페이지면 미리보기에서 원하는 쪽을 고른 뒤 이미지로 바꿔 기존 경로에 넘긴다.
+function clampPdfPage(value){
+  const max=pendingPdf ? pendingPdf.numPages : 1;
+  return Math.max(1,Math.min(max,Math.round(Number(value)||1)));
+}
+
+function updatePdfPageControls(value){
+  const pageNo=clampPdfPage(value), max=pendingPdf ? pendingPdf.numPages : 1;
+  pdfPageNumber.value=String(pageNo);
+  pdfPageNumber.max=String(max);
+  pdfPageSlider.max=String(max);
+  pdfPageSlider.value=String(pageNo);
+  $('pdfPageTotal').textContent=`/ ${max}`;
+  $('pdfPrev').disabled=pageNo<=1;
+  $('pdfNext').disabled=pageNo>=max;
+  return pageNo;
+}
+
+async function renderPdfPreview(value){
+  if(!pendingPdf)return;
+  const pageNo=updatePdfPageControls(value), seq=++pdfPreviewSeq;
+  const msg=$('pdfPreviewStatus');
+  msg.textContent='미리보기 준비 중…';msg.style.display='block';
+  if(pdfPreviewTask){try{pdfPreviewTask.cancel();}catch(_){}}
+  try{
+    const page=await pendingPdf.getPage(pageNo);
+    if(seq!==pdfPreviewSeq)return;
+    const base=page.getViewport({scale:1});
+    const maxW=Math.min(500,Math.max(260,window.innerWidth-70));
+    const maxH=Math.min(540,Math.max(200,window.innerHeight*0.48));
+    const scale=Math.min(1.35,maxW/base.width,maxH/base.height);
+    const vp=page.getViewport({scale});
+    pdfPreviewCanvas.width=Math.max(1,Math.round(vp.width));
+    pdfPreviewCanvas.height=Math.max(1,Math.round(vp.height));
+    const ctx=pdfPreviewCanvas.getContext('2d');
+    ctx.fillStyle='#fff';ctx.fillRect(0,0,pdfPreviewCanvas.width,pdfPreviewCanvas.height);
+    pdfPreviewTask=page.render({canvasContext:ctx,viewport:vp});
+    await pdfPreviewTask.promise;
+    if(seq===pdfPreviewSeq)msg.style.display='none';
+  }catch(err){
+    if(err && err.name==='RenderingCancelledException')return;
+    if(seq===pdfPreviewSeq){msg.textContent='미리보기를 표시하지 못했습니다.';msg.style.display='block';}
+  }finally{
+    if(seq===pdfPreviewSeq)pdfPreviewTask=null;
+  }
+}
+
+function showPdfPicker(pdf,fileName){
+  pendingPdf=pdf;pendingPdfName=fileName||'score.pdf';
+  $('pdfFileInfo').textContent=`${pendingPdfName} · 총 ${pdf.numPages}페이지`;
+  pdfPicker.classList.add('open');pdfPicker.setAttribute('aria-hidden','false');
+  document.body.classList.add('modal-open');
+  updatePdfPageControls(1);renderPdfPreview(1);
+  setTimeout(()=>pdfPageNumber.focus(),0);
+}
+
+function closePdfPicker(message){
+  pdfPreviewSeq++;
+  if(pdfPreviewTask){try{pdfPreviewTask.cancel();}catch(_){}}
+  pdfPreviewTask=null;
+  const pdf=pendingPdf;pendingPdf=null;pendingPdfName='';
+  pdfPicker.classList.remove('open');pdfPicker.setAttribute('aria-hidden','true');
+  document.body.classList.remove('modal-open');
+  if(pdf && pdf.destroy)Promise.resolve(pdf.destroy()).catch(()=>{});
+  if(message)setStatus(message);
+}
+
 // 해상도는 인식에 충분하도록 넉넉히 잡되(2.5배), 너무 큰 페이지는 상한을 둔다.
+async function importPdfPage(pdf,pageNo,fileName){
+  const page=await pdf.getPage(pageNo);
+  let scale=2.5;
+  const base=page.getViewport({scale:1});
+  const longest=Math.max(base.width,base.height);
+  if(longest*scale>3500)scale=3500/longest;
+  const vp=page.getViewport({scale});
+  const cv=document.createElement('canvas');
+  cv.width=Math.round(vp.width);cv.height=Math.round(vp.height);
+  const cctx=cv.getContext('2d');
+  cctx.fillStyle='#fff';cctx.fillRect(0,0,cv.width,cv.height);
+  await page.render({canvasContext:cctx,viewport:vp}).promise;
+  const blob=await new Promise(resolve=>cv.toBlob(resolve,'image/png'));
+  if(!blob)throw new Error('PDF 페이지 이미지 변환 실패');
+  const baseName=(fileName||'score.pdf').replace(/\.pdf$/i,'');
+  loadFile(new File([blob],`${baseName}-p${pageNo}.png`,{type:'image/png'}));
+}
+
 async function loadPdf(file){
   if(!window.pdfjsLib){ setStatus('PDF 라이브러리를 불러오지 못했습니다 (인터넷 연결 확인).'); return; }
   try{
-    setStatus('PDF를 이미지로 변환하는 중…');
+    setStatus('PDF를 읽는 중…');
     pdfjsLib.GlobalWorkerOptions.workerSrc =
       'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
     const buf = await file.arrayBuffer();
     const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
     if(pdf.numPages > 1){
-      setStatus(`PDF ${pdf.numPages}쪽 중 1쪽만 불러옵니다.`);
+      showPdfPicker(pdf,file.name);
+      setStatus(`PDF ${pdf.numPages}페이지 중 불러올 페이지를 선택하세요.`);
+      return;
     }
-    const page = await pdf.getPage(1);
-    let scale = 2.5;
-    const base = page.getViewport({ scale: 1 });
-    const longest = Math.max(base.width, base.height);
-    if(longest * scale > 3500) scale = 3500 / longest;   // 과도한 메모리 사용 방지
-    const vp = page.getViewport({ scale });
-    const cv = document.createElement('canvas');
-    cv.width = Math.round(vp.width); cv.height = Math.round(vp.height);
-    const cctx = cv.getContext('2d');
-    cctx.fillStyle = '#fff'; cctx.fillRect(0, 0, cv.width, cv.height);
-    await page.render({ canvasContext: cctx, viewport: vp }).promise;
-    cv.toBlob(b=>{
-      if(!b){ setStatus('PDF 변환에 실패했습니다.'); return; }
-      loadFile(new File([b], (file.name||'score').replace(/\.pdf$/i,'') + '.png', { type:'image/png' }));
-    }, 'image/png');
+    setStatus('PDF 1페이지를 이미지로 변환하는 중…');
+    await importPdfPage(pdf,1,file.name);
+    if(pdf.destroy)await pdf.destroy();
   }catch(err){
     setStatus('PDF를 읽지 못했습니다: ' + (err && err.message ? err.message : err));
   }
 }
 
+$('pdfPrev').addEventListener('click',()=>renderPdfPreview(clampPdfPage(pdfPageNumber.value)-1));
+$('pdfNext').addEventListener('click',()=>renderPdfPreview(clampPdfPage(pdfPageNumber.value)+1));
+pdfPageNumber.addEventListener('change',()=>renderPdfPreview(pdfPageNumber.value));
+pdfPageSlider.addEventListener('input',()=>renderPdfPreview(pdfPageSlider.value));
+$('pdfCancel').addEventListener('click',()=>closePdfPicker('PDF 불러오기를 취소했습니다.'));
+$('pdfOpen').addEventListener('click',async()=>{
+  if(!pendingPdf)return;
+  const button=$('pdfOpen'), pdf=pendingPdf, name=pendingPdfName, pageNo=clampPdfPage(pdfPageNumber.value);
+  button.disabled=true;setStatus(`PDF ${pageNo}페이지를 이미지로 변환하는 중…`);
+  try{
+    if(pdfPreviewTask){try{pdfPreviewTask.cancel();}catch(_){}}
+    pdfPreviewTask=null;pdfPreviewSeq++;
+    await importPdfPage(pdf,pageNo,name);
+    closePdfPicker();
+  }catch(err){
+    setStatus('PDF 페이지를 읽지 못했습니다: '+(err&&err.message?err.message:err));
+  }finally{button.disabled=false;}
+});
+pdfPicker.addEventListener('click',e=>{if(e.target===pdfPicker)closePdfPicker('PDF 불러오기를 취소했습니다.');});
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&pdfPicker.classList.contains('open'))closePdfPicker('PDF 불러오기를 취소했습니다.');});
+
 function loadFile(file){
   if(!file){ setStatus('파일이 없습니다.'); return; }
-  if(file.type === 'application/pdf' || /\.pdf$/i.test(file.name||'')){ loadPdf(file); return; }
-  if(!file.type.startsWith('image/')){ setStatus('이미지 또는 PDF 파일이 아닙니다.'); return; }
+  const fileName=file.name||'', fileType=file.type||'';
+  if(fileType === 'application/pdf' || /\.pdf$/i.test(fileName)){ loadPdf(file); return; }
+  const imageByType=fileType.startsWith('image/');
+  const imageByName=/\.(png|jpe?g|gif|webp|bmp|heic|heif|avif)$/i.test(fileName);
+  if(!imageByType && !imageByName){ setStatus('이미지 또는 PDF 파일이 아닙니다.'); return; }
   const url = URL.createObjectURL(file);
   const im = new Image();
   im.onload = () => {
@@ -431,13 +583,21 @@ function loadFile(file){
     setStatus(`이미지 로드 완료 (${imgW}×${imgH}). "코드 인식 실행"을 눌러주세요.`);
     switchTab('edit'); renderAll();
   };
+  im.onerror = () => {
+    URL.revokeObjectURL(url);
+    setStatus('이미지를 열지 못했습니다. JPG 또는 PNG로 변환한 뒤 다시 선택해 주세요.');
+  };
   im.src = url;
 }
-drop.addEventListener('click', () => {
-  const inp=document.createElement('input'); inp.type='file'; inp.accept='image/*,application/pdf';
-  inp.onchange=()=>loadFile(inp.files[0]); inp.click();
+filePicker.addEventListener('change', () => {
+  const file=filePicker.files && filePicker.files[0];
+  if(file) loadFile(file);
+  // 같은 파일을 다시 선택해도 change 이벤트가 발생하도록 초기화한다.
+  filePicker.value='';
 });
-drop.addEventListener('keydown', e=>{ if(e.key==='Enter'||e.key===' ') drop.click(); });
+drop.addEventListener('keydown', e=>{
+  if(e.key==='Enter'||e.key===' '){ e.preventDefault(); filePicker.value=''; filePicker.click(); }
+});
 ['dragover','dragenter'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.add('hover');}));
 ['dragleave','drop'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.remove('hover');}));
 drop.addEventListener('drop', e=>loadFile(e.dataTransfer.files[0]));
@@ -468,9 +628,8 @@ document.addEventListener('drop', e=>{
 // "새 악보" 버튼: 파일 선택창을 열어 다른 악보로 바꾼다.
 $('btnNew').addEventListener('click', ()=>{
   if(chords.length && !confirm('현재 악보의 코드 편집 내용이 사라집니다. 새 악보를 여시겠습니까?')) return;
-  const inp=document.createElement('input'); inp.type='file'; inp.accept='image/*,application/pdf';
-  inp.onchange=()=>{ if(inp.files[0]) loadFile(inp.files[0]); };
-  inp.click();
+  filePicker.value='';
+  filePicker.click();
 });
 window.addEventListener('paste', e=>{
   for(const it of e.clipboardData.items){
@@ -539,7 +698,11 @@ function detectStaffSystems(ctx, w, h, rowBlackFrac=STAFF_ROW_BLACK_FRAC){
   let darkPx = 0;
   for(let i = 0; i < data.length; i += 4) if(data[i] <= 190) darkPx++;
   const inkRatio = darkPx / (w*h);
-  const GRAY_INK = inkRatio < 0.07 ? 215 : 190;
+  // 고품질 확대 보간으로 흐린 회색 획의 주변 픽셀이 조금 어두워지면 잉크 비율이
+  // 0.07 경계를 근소하게 넘으며 기준이 갑자기 215→190으로 바뀌는 불연속이 있었다.
+  // 전환점을 0.093으로만 늦춰 경계 사례의 흐린 오선은 살리되, 0.095 이상인
+  // 진한 페이지에서 가짜 후보가 늘어나는 회귀는 피한다.
+  const GRAY_INK = inkRatio < 0.093 ? 215 : 190;
   const isBlack = (x, y) => {
     const i = (y*w + x)*4;
     return data[i] === 0 || data[i] <= GRAY_INK;
@@ -743,6 +906,79 @@ function detectStaffSystems(ctx, w, h, rowBlackFrac=STAFF_ROW_BLACK_FRAC){
   return systems;
 }
 
+// 원근 왜곡이나 종이 굴곡 때문에 오선이 페이지 전체 너비에서는 한 행에 모이지 않아도,
+// 좁은 세로 구간에서는 5줄 격자가 선명하게 보이는 경우가 있다. 페이지를 5등분해
+// 같은 높이의 오선을 독립적으로 찾고, 3개 이상의 구간이 동의할 때만 보조 후보로 삼는다.
+// 오탐을 막기 위해 기존 오선 두 개 사이의 비정상적으로 큰 내부 공백만 메우며,
+// 첫/마지막 오선 바깥으로는 추정 확장하지 않는다.
+function recoverStaffSystemsFromStrips(ctx, w, h, systems){
+  if(systems.length < 3 || h <= w * 1.15) return systems;
+  const med = values => {
+    const a = values.slice().sort((x,y) => x-y);
+    return a[Math.floor(a.length/2)];
+  };
+  const baseGap = med(systems.map(s => s.gap));
+  if(!(baseGap >= 3)) return systems;
+
+  const stripCount = 5;
+  const margin = Math.round(w * 0.03);
+  const usable = w - margin * 2;
+  const observations = [];
+  for(let strip = 0; strip < stripCount; strip++){
+    const x0 = Math.round(margin + usable * strip / stripCount);
+    const x1 = Math.round(margin + usable * (strip + 1) / stripCount);
+    const sw = Math.max(1, x1 - x0);
+    const c = document.createElement('canvas');
+    c.width = sw; c.height = h;
+    const g = c.getContext('2d');
+    g.fillStyle = '#fff'; g.fillRect(0, 0, sw, h);
+    g.drawImage(ctx.canvas, x0, 0, sw, h, 0, 0, sw, h);
+    const found = detectStaffSystems(g, sw, h, 0.18);
+    for(const s of found){
+      if(s.gap < baseGap*0.70 || s.gap > baseGap*1.30) continue;
+      observations.push({ strip, yTop:s.yTop, gap:s.gap });
+    }
+  }
+  if(!observations.length) return systems;
+
+  observations.sort((a,b) => a.yTop-b.yTop);
+  const clusters = [];
+  for(const o of observations){
+    let best = null, bestDist = Infinity;
+    for(const c of clusters){
+      if(c.strips.has(o.strip)) continue;
+      const center = med(c.ys);
+      const dist = Math.abs(o.yTop-center);
+      if(dist <= baseGap*1.8 && dist < bestDist){ best=c; bestDist=dist; }
+    }
+    if(!best){
+      best = { ys:[], gaps:[], strips:new Set() };
+      clusters.push(best);
+    }
+    best.ys.push(o.yTop); best.gaps.push(o.gap); best.strips.add(o.strip);
+  }
+
+  const original = systems.slice().sort((a,b) => a.yTop-b.yTop);
+  const additions = [];
+  for(const c of clusters){
+    if(c.strips.size < 3) continue;
+    const yTop = med(c.ys), gap = med(c.gaps), yBottom = yTop + 4*gap;
+    const overlaps = original.some(s => yTop < s.yBottom+s.gap*0.5 && yBottom > s.yTop-s.gap*0.5);
+    if(overlaps) continue;
+    let prev = null, next = null;
+    for(const s of original){
+      if(s.yTop < yTop) prev = s;
+      else { next = s; break; }
+    }
+    if(!prev || !next) continue;
+    if(next.yTop-prev.yTop < baseGap*14) continue;
+    if(yTop-prev.yTop < baseGap*5.5 || next.yTop-yTop < baseGap*5.5) continue;
+    additions.push({ yTop, gap, yBottom, stripRecovery:true });
+  }
+  if(!additions.length) return systems;
+  return original.concat(additions).sort((a,b) => a.yTop-b.yTop);
+}
+
 // 오선 시스템 하나의 "코드 영역" 상/하한을 계산.
 // staffSystems는 위→아래 순서로 정렬되어 있다고 가정 (실제로 항상 위에서부터 검출됨).
 // 위쪽 한계는 원래 STAFF_BAND_ABOVE_GAPS로 계산하되, 바로 이전 오선의 맨 아랫줄을
@@ -935,6 +1171,32 @@ function groupComponentsIntoWords(components, gapThreshold, maxGroupWidth, staff
 // 400개로 실측 검증한 임계값 (라틴 96.8% 유지, 한글 85% 차단).
 const LATIN_VAR_SUBASPECT_MAX = 2.5; // 위첨자(작은 숫자)가 있으면 부분 성분 종횡비 분산이 더 커진다.
                                       // 실제 악보 3장으로 재보정: 이 값에서 진짜 코드 손실 없이 한글은 계속 걸러짐.
+
+// 손글씨에서는 minor를 `m` 대신 root 오른쪽의 짧은 수평 대시로 적기도 한다(A-, B-).
+// root와 대시가 연결되지 않아 별도 word가 되는 경우를 오선 간격 비율로만 찾는다.
+function findDetachedMinorDash(components, word, staffGap){
+  const ww=word.x1-word.x0, wh=word.y1-word.y0;
+  if(ww>staffGap*3.0 || wh<staffGap*3.05 || wh>staffGap*4.60) return null;
+  const cy=(word.y0+word.y1)/2;
+  let best=null,bestDx=Infinity;
+  for(const c of components){
+    const cw=c.x1-c.x0,ch=c.y1-c.y0,dx=c.x0-word.x1,ccy=(c.y0+c.y1)/2;
+    if(dx<staffGap*0.25 || dx>staffGap*1.60) continue;
+    if(cw<staffGap*1.25 || cw>staffGap*2.75) continue;
+    if(ch<staffGap*0.20 || ch>staffGap*0.60 || cw/Math.max(1,ch)<3.0) continue;
+    if(Math.abs(ccy-cy)>wh*0.20) continue;
+    if(dx<bestDx){best=c;bestDx=dx;}
+  }
+  if(!best) return null;
+  // 대시 오른쪽에 7 같은 추가 suffix가 있으면 단순 minor가 아니므로 이 경로에서 제외한다.
+  const hasTail=components.some(c=>{
+    if(c===best) return false;
+    const dx=c.x0-best.x1,ch=c.y1-c.y0,ccy=(c.y0+c.y1)/2;
+    return dx>=0 && dx<=staffGap*1.40 && ch>=staffGap*0.45 && Math.abs(ccy-cy)<=wh*0.55;
+  });
+  if(hasTail) return null;
+  return {x0:word.x0,y0:Math.min(word.y0,best.y0),x1:best.x1,y1:Math.max(word.y1,best.y1),dashGap:bestDx/staffGap,minorRootBox:{...word}};
+}
 
 function looksLikeLatinText(ctx, x0, y0, x1, y1){
   const w = x1 - x0, h = y1 - y0;
@@ -1273,6 +1535,13 @@ function detectChordCandidates(ctx, cvWidth, staffSystems){
       const ratio = (w.y1 - w.y0) / sys.gap;
       return ratio >= 0.95 && ratio < hMin;
     });
+    // 손으로 크게 쓴 코드는 인쇄 코드보다 높이가 훨씬 커서 기본 상한을 넘는다.
+    // 전역 상한을 풀면 음표·세로선이 늘어나므로, 같은 단에서 큰 성분이 3개 이상
+    // 반복되는 경우만 별도 후보로 보존하고 판독 뒤 다시 cluster 합의를 확인한다.
+    const highSized = words.filter(w => {
+      const ratio = (w.y1 - w.y0) / sys.gap;
+      return ratio > hMax && ratio <= 4.60;
+    });
     // (예전에는 "크기 필터가 전멸하면 필터를 포기하고 전체를 쓴다"는 안전장치가 있었는데,
     //  가짜 오선이 잡히면 그 거대한 밴드에서 모든 잉크가 후보로 쏟아지는 부작용이 있었다.
     //  이제 오선 간격을 검증하므로, 비어 있으면 실제로 그 밴드에 코드가 없는 것으로 본다.)
@@ -1322,6 +1591,26 @@ function detectChordCandidates(ctx, cvWidth, staffSystems){
         if(inter/a>=0.70){overlap=true;break;}
       }
       if(!overlap) boxes.push(s);
+    }
+    // 기존 split rescue를 먼저 확정한 뒤 큰 손글씨 후보를 추가한다. 순서를 바꾸면
+    // 거부될 큰 후보가 기존 split 후보를 overlap으로 밀어내는 간접 회귀가 생긴다.
+    const highClusterId = highSized.length >= 3 ? `high-${i}` : null;
+    if(highClusterId) for(let w of highSized){
+      const minorDash=findDetachedMinorDash(comps,w,sys.gap);
+      if(minorDash) w={...minorDash,detachedMinorDash:true};
+      else w = trimTrailingSlur(ctx, w, sys.gap);
+      if(isAttachedToStaff(ctx, w, bandBottom, sys.gap, ctx.canvas.height)) continue;
+      if(looksLikeSlur(ctx, w.x0, w.y0, w.x1, w.y1)) continue;
+      if(!w.detachedMinorDash && !looksLikeLatinText(ctx, w.x0, w.y0, w.x1, w.y1)) continue;
+      let overlap=false;
+      for(const b of boxes){
+        const ix=Math.max(0,Math.min(w.x1,b.x1)-Math.max(w.x0,b.x0));
+        const iy=Math.max(0,Math.min(w.y1,b.y1)-Math.max(w.y0,b.y0));
+        const inter=ix*iy;if(!inter)continue;
+        const a=Math.max(1,(w.x1-w.x0)*(w.y1-w.y0));
+        if(inter/a>=0.60){overlap=true;break;}
+      }
+      if(!overlap) boxes.push({...w,rescueHighH:true,rescueHighHCluster:highClusterId});
     }
   }
   boxes.sort((a,b)=>a.y0-b.y0 || a.x0-b.x0);
@@ -2628,6 +2917,20 @@ async function recognizeBoxesWithModel(srcImage, srcW, srcH, boxes){
     }
   }
 
+  // probe-v7.20: 작은 조판에서 소문자 m의 세로 획이 대문자 M처럼 읽히는
+  // 반복 오류를 보수적으로 보정한다. 정상적인 M7은 같은 100x32 입력에서
+  // 폭이 충분히 넓지만, 이 오류는 박스가 압축되어 폭/높이 비가 1.9 미만이다.
+  // slash·복합 표기는 건드리지 않고, 단일 M7 표기만 대상으로 한다.
+  // 이 조건은 파일명·곡명·좌표가 아닌 글자 박스의 일반적인 기하 특성이다.
+  const normalizeCompactM7=()=>{
+    for(let i=0;i<boxes.length;i++){
+      const t=norm(base.texts[i]||'');
+      if(!/^[A-G][#b]?M7$/.test(t)) continue;
+      const b=boxes[i], asp=(b.x1-b.x0)/Math.max(1,b.y1-b.y0);
+      if(asp<1.90) base.texts[i]=t.replace('M7','m7');
+    }
+  };
+
   // 문법이 깨진 박스만 추린다
   const bad = [];
   for(let i = 0; i < boxes.length; i++) if(!boxes[i].attachedRejected && !isChordLike(base.texts[i])) bad.push(i);
@@ -2635,6 +2938,7 @@ async function recognizeBoxesWithModel(srcImage, srcW, srcH, boxes){
     await rescuePartialSlashConsensus(session,srcImage,srcW,srcH,boxes,base);
     await finalTargetedRescue(session,srcImage,srcW,srcH,boxes,base);
     await rescueBassOnlyRootConsensus(session,srcImage,srcW,srcH,boxes,base);
+    normalizeCompactM7();
     return base;
   }
 
@@ -2670,6 +2974,7 @@ async function recognizeBoxesWithModel(srcImage, srcW, srcH, boxes){
   await rescuePartialSlashConsensus(session,srcImage,srcW,srcH,boxes,base);
   await finalTargetedRescue(session,srcImage,srcW,srcH,boxes,base);
   await rescueBassOnlyRootConsensus(session,srcImage,srcW,srcH,boxes,base);
+  normalizeCompactM7();
   return base;
 }
 
@@ -2731,6 +3036,7 @@ async function runOcr(){
           systems = perspectiveSystems;
         }
       }
+      systems = recoverStaffSystemsFromStrips(grayCtx, cvW, cvH, systems);
       binarize(g, cvW, cvH);
       return { canvas: c, ctx: g, gray: grayCopy, systems };
     }
@@ -2822,7 +3128,91 @@ async function runOcr(){
     setStatus(`코드 판독 중… (커스텀 모델, 후보 ${boxes.length}개)`);
     await loadOrtModel();
     progBar.style.width = '55%';
-    const { texts, confidences } = await recognizeBoxesWithModel(cvGray, cv.width, cv.height, boxes);
+    // 큰 손글씨 rescue 후보는 페이지 어휘 기반 재판독에 영향을 줄 수 있으므로 기존 후보와
+    // 완전히 분리해 판독한다. 최종 거부된 실험 후보 때문에 기존 코드 결과가 바뀌지 않게 한다.
+    let texts, confidences;
+    const ordinaryBoxes = boxes.filter(b => !b.rescueHighH);
+    const highBoxes = boxes.filter(b => b.rescueHighH);
+    if(highBoxes.length){
+      const ordinaryRead = await recognizeBoxesWithModel(cvGray, cv.width, cv.height, ordinaryBoxes);
+      const highInputCount = highBoxes.length;
+      const session = await loadOrtModel();
+      const highRead = await readPass(session, cvGray, cv.width, cv.height, highBoxes, 0.25);
+      const minorIdx=[];
+      highBoxes.forEach((b,i)=>{if(b.minorRootBox)minorIdx.push(i);});
+      if(minorIdx.length){
+        const rootRead=await readPass(session,cvGray,cv.width,cv.height,minorIdx.map(i=>highBoxes[i].minorRootBox),0.25);
+        minorIdx.forEach((i,k)=>{
+          const t=norm(rootRead.texts[k]||'');
+          if(/^[A-G][#b]?$/.test(t)){highRead.texts[i]=t;highRead.confidences[i]=rootRead.confidences[k]||0;}
+        });
+        // 분리한 root 박스가 너무 타이트해 공백이 된 경우에만 원래 후보를 넓게 한 번 더 읽는다.
+        // 여기서는 root만 복구하고, 실제 채택은 아래의 페이지 minor 어휘 합의가 결정한다.
+        const unresolved=minorIdx.filter(i=>!/^[A-G][#b]?(?:m|-)?$/.test(norm(highRead.texts[i]||'')));
+        if(unresolved.length){
+          const wideRead=await readPass(session,cvGray,cv.width,cv.height,unresolved.map(i=>highBoxes[i]),0.50);
+          unresolved.forEach((i,k)=>{
+            const t=norm(wideRead.texts[k]||''), c=wideRead.confidences[k]||0;
+            if(/^[A-G][#b]?$/.test(t) && c>=0.95){
+              highRead.texts[i]=t; highRead.confidences[i]=c; highBoxes[i].minorVocabProbe=true;
+            }
+          });
+        }
+      }
+      // 기본 판독은 root만 보이지만 좁은 여백에서 완전 slash가 읽히는 후보를 기록한다.
+      // 실제 교체는 페이지에서 root와 bass가 각각 충분히 확인된 뒤에만 수행한다.
+      const narrowRead=await readPass(session,cvGray,cv.width,cv.height,highBoxes,0.08);
+      highBoxes.forEach((b,i)=>{
+        const base=norm(highRead.texts[i]||''), alt=norm(narrowRead.texts[i]||''), c=narrowRead.confidences[i]||0;
+        const root=/^([A-G][#b]?)$/.exec(base)?.[1], slash=/^([A-G][#b]?)\/([A-G][#b]?)$/.exec(alt);
+        if(root && (highRead.confidences[i]||0)>=0.99 && slash && slash[1]===root && c>=0.94){
+          b.slashNarrowText=alt; b.slashNarrowConfidence=c;
+        }
+      });
+      // slash가 불완전하거나 root suffix만 빠진 저확신 slash에 한해 박스 내부를 분할한다.
+      // 같은 경계에서 읽힌 prefix와 /bass가 기존 root·bass에 동의할 때만 합친다.
+      const splitFracs=[0.30,0.40,0.50,0.60,0.70,0.80], splitIdx=[];
+      highBoxes.forEach((b,i)=>{
+        const t=norm(highRead.texts[i]||''), c=highRead.confidences[i]||0;
+        if(/^[A-G][#b]?\/$/.test(t) || (c<0.90 && /^[A-G][#b]?[^/]*\/[A-G][#b]?$/.test(t))) splitIdx.push(i);
+      });
+      if(splitIdx.length){
+        const prefixRects=[],suffixRects=[];
+        splitIdx.forEach(i=>{
+          const b=highBoxes[i],w=Math.max(1,b.x1-b.x0),h=Math.max(1,b.y1-b.y0);
+          splitFracs.forEach(f=>{
+            prefixRects.push({x0:b.x0,y0:b.y0-0.10*h,x1:b.x0+w*f,y1:b.y1+0.10*h});
+            suffixRects.push({x0:b.x0+w*f,y0:b.y0-0.10*h,x1:b.x1,y1:b.y1+0.10*h});
+          });
+        });
+        const prefixRead=await readRectPass(session,cvGray,cv.width,cv.height,prefixRects);
+        const suffixRead=await readRectPass(session,cvGray,cv.width,cv.height,suffixRects);
+        splitIdx.forEach((i,k)=>{
+          const b=highBoxes[i],base=norm(highRead.texts[i]||''),full=/^([A-G][#b]?)([^/]*)\/([A-G][#b]?)$/.exec(base),open=/^([A-G][#b]?)\/$/.exec(base),off=k*splitFracs.length;
+          if(full){
+            let best=null;
+            splitFracs.forEach((f,z)=>{
+              const pre=norm(prefixRead.texts[off+z]||''),bass=norm(suffixRead.texts[off+z]||''),pc=prefixRead.confidences[off+z]||0,bc=suffixRead.confidences[off+z]||0;
+              const pm=/^([A-G][#b]?)(.*)$/.exec(pre),bm=/^\/([A-G][#b]?)$/.exec(bass);
+              if(!pm||!bm||pm[1]!==full[1]||bm[1]!==full[3]||pre.includes('/')||!isChordLike(pre)||pre===full[1]+full[2]||pc<0.98||bc<0.90)return;
+              const score=Math.min(pc,bc);if(!best||score>best.score)best={text:pre+'/'+bm[1],score};
+            });
+            if(best)b.splitSlashText=best.text;
+          }else if(open){
+            let votes=0;
+            splitFracs.forEach((f,z)=>{if(f<=0.70&&norm(prefixRead.texts[off+z]||'')===open[1]&&(prefixRead.confidences[off+z]||0)>=0.95)votes++;});
+            const z=splitFracs.length-1,tail=norm(suffixRead.texts[off+z]||''),tc=suffixRead.confidences[off+z]||0;
+            if(votes>=3&&/^[A-G][#b]?$/.test(tail)&&tc>=0.99){b.splitSlashText=open[1]+'/'+tail;b.splitSlashNeedsBassVocab=true;}
+          }
+        });
+      }
+      // 페이지 어휘 재판독과 파생 박스 생성은 사용하지 않고 최초 후보만 유지한다.
+      boxes.length=0; boxes.push(...ordinaryBoxes,...highBoxes);
+      texts=[...ordinaryRead.texts,...highRead.texts.slice(0,highInputCount)];
+      confidences=[...ordinaryRead.confidences,...highRead.confidences.slice(0,highInputCount)];
+    }else{
+      ({texts,confidences}=await recognizeBoxesWithModel(cvGray, cv.width, cv.height, boxes));
+    }
     progBar.style.width = '95%';
 
     let found = 0;
@@ -2831,8 +3221,148 @@ async function runOcr(){
     // 같은 rescue 표기가 한 악보에서 2회 이상 반복될 때만 허용한다.
     const lowHCounts = new Map();
     boxes.forEach((b,i)=>{ if(b.rescueLowH && /^[A-G][#b]?2$/.test(texts[i]||'')) lowHCounts.set(texts[i],(lowHCounts.get(texts[i])||0)+1); });
+    // 세로 분할로 새로 복구한 오선은 보조 검출이므로, 그 코드행 전체가 안정적인 경우만 쓴다.
+    // 후보 하나의 과확신을 믿는 대신 코드 문법 후보가 3개 이상이고 모두 0.80 이상이어야 한다.
+    // 기존 오선에는 적용하지 않아 안정판 결과를 건드리지 않는다.
+    const stripRecoveryOK = new Set();
+    for(let s = 0; s < staffSystems.length; s++){
+      if(!staffSystems[s].stripRecovery) continue;
+      const rowConf = [];
+      boxes.forEach((b,i)=>{
+        if(!isChordLike(texts[i]||'')) return;
+        const cy = (b.y0+b.y1)/2;
+        let si = staffSystems.findIndex(sys => sys.yTop > cy);
+        if(si < 0) si = staffSystems.length-1;
+        if(si === s) rowConf.push(confidences[i]||0);
+      });
+      if(rowConf.length >= 3 && rowConf.every(v => v >= 0.80)) stripRecoveryOK.add(s);
+    }
+    // 큰 손글씨 후보는 음표·기호와 겹칠 위험이 더 크다. 같은 단에서 모델이 코드로
+    // 판독한 후보가 4개 이상이고 모두 0.97 이상일 때만 그 단 전체를 허용한다.
+    const highRecoveryOK = new Set();
+    for(const b of boxes){
+      if(!b.rescueHighHCluster || highRecoveryOK.has(b.rescueHighHCluster)) continue;
+      const rowConf=[];
+      boxes.forEach((q,i)=>{
+        if(q.rescueHighHCluster===b.rescueHighHCluster && isChordLike(texts[i]||'')) rowConf.push(confidences[i]||0);
+      });
+      if(rowConf.length>=4 && rowConf.every(v=>v>=0.97)) highRecoveryOK.add(b.rescueHighHCluster);
+    }
+    // 행 전체 합의가 한 개의 불확실한 후보 때문에 실패해도, 고확신 코드가 4개 이상
+    // 반복되면 그 0.98 이상 후보들만 선택적으로 허용한다.
+    const selectiveHighOK = new Set();
+    for(const b of boxes){
+      if(!b.rescueHighHCluster || selectiveHighOK.has(b.rescueHighHCluster)) continue;
+      let n=0;
+      boxes.forEach((q,i)=>{
+        if(q.rescueHighHCluster===b.rescueHighHCluster && isChordLike(texts[i]||'') && (confidences[i]||0)>=0.98)n++;
+      });
+      if(n>=4) selectiveHighOK.add(b.rescueHighHCluster);
+    }
+    // 대시형 minor는 같은 행에서 두 번 이상 반복되고, 모델도 같은 박스를 root 또는
+    // root-minor로 판독할 때만 허용한다. 대시 모양 하나만으로는 음표 빔을 배제하기 어렵다.
+    const minorDashOK = new Set();
+    for(const b of boxes){
+      if(!b.rescueHighHCluster || minorDashOK.has(b.rescueHighHCluster)) continue;
+      let dashCount=0,resolvedDash=0;
+      const rowConf=[];
+      boxes.forEach((q,i)=>{
+        if(q.rescueHighHCluster!==b.rescueHighHCluster) return;
+        const t=norm(texts[i]||'');
+        if(q.detachedMinorDash){dashCount++;if(/^[A-G][#b]?(?:m|-)?$/.test(t))resolvedDash++;}
+        if(isChordLike(t)) rowConf.push(confidences[i]||0);
+      });
+      if(dashCount>=2 || (resolvedDash>=1 && rowConf.length>=3 && rowConf.every(v=>v>=0.95))) minorDashOK.add(b.rescueHighHCluster);
+    }
+    // 단독 대시형 minor는 같은 페이지에서 기존의 더 강한 규칙으로 이미 확정된 동일 코드가
+    // 두 번 이상 있을 때만 허용한다. 넓은 crop의 단일 판독만으로 새 어휘를 만들지는 않는다.
+    const confirmedMinorCounts = new Map();
+    boxes.forEach((b,i)=>{
+      if(!b.detachedMinorDash) return;
+      const t=norm(texts[i]||''), selective=selectiveHighOK.has(b.rescueHighHCluster) && (confidences[i]||0)>=0.98;
+      if(!/^[A-G][#b]?(?:m|-)?$/.test(t) || (!highRecoveryOK.has(b.rescueHighHCluster) && !minorDashOK.has(b.rescueHighHCluster) && !selective)) return;
+      const root=/^([A-G][#b]?)/.exec(t)?.[1];
+      if(root) confirmedMinorCounts.set(root+'m',(confirmedMinorCounts.get(root+'m')||0)+1);
+    });
+    const minorVocabOK = new Set();
+    boxes.forEach((b,i)=>{
+      if(!b.minorVocabProbe) return;
+      const root=/^([A-G][#b]?)$/.exec(norm(texts[i]||''))?.[1];
+      if(root && (confirmedMinorCounts.get(root+'m')||0)>=2) minorVocabOK.add(i);
+    });
+    // 좁은 crop에서만 읽힌 slash는 그 root와 bass가 페이지의 이미 확정된 코드 root로
+    // 각각 세 번 이상 관찰될 때만 허용한다. 후보 자신의 판독은 어휘 횟수에 포함하지 않는다.
+    const confirmedRootCounts = new Map(), confirmedChordCounts = new Map();
+    boxes.forEach((b,i)=>{
+      const selective=selectiveHighOK.has(b.rescueHighHCluster) && (confidences[i]||0)>=0.98;
+      const accepted=!b.rescueHighH || highRecoveryOK.has(b.rescueHighHCluster) || minorDashOK.has(b.rescueHighHCluster) || minorVocabOK.has(i) || selective;
+      const t=norm(texts[i]||''), root=/^([A-G][#b]?)/.exec(t)?.[1];
+      if(accepted && isChordLike(t) && root){
+        confirmedRootCounts.set(root,(confirmedRootCounts.get(root)||0)+1);
+        confirmedChordCounts.set(t,(confirmedChordCounts.get(t)||0)+1);
+      }
+    });
+    const slashNarrowOK = new Set();
+    boxes.forEach((b,i)=>{
+      const m=/^([A-G][#b]?)\/([A-G][#b]?)$/.exec(b.slashNarrowText||'');
+      if(m && (confirmedRootCounts.get(m[1])||0)>=3 && (confirmedRootCounts.get(m[2])||0)>=3) slashNarrowOK.add(i);
+    });
+    const splitSlashOK = new Set();
+    boxes.forEach((b,i)=>{
+      const m=/^([A-G][#b]?)[^/]*\/([A-G][#b]?)$/.exec(b.splitSlashText||'');
+      if(m && (!b.splitSlashNeedsBassVocab || (confirmedRootCounts.get(m[2])||0)>=2)) splitSlashOK.add(i);
+    });
+    // 행별 후보 수가 부족해 기존 게이트가 실패해도, 같은 완전 slash가 서로 다른
+    // 손글씨 행에서 고확신으로 반복되면 해당 문자열의 후보만 선택적으로 허용한다.
+    const repeatedHighSlashRows = new Map();
+    boxes.forEach((b,i)=>{
+      const t=norm(texts[i]||'');
+      if(!b.rescueHighHCluster || (confidences[i]||0)<0.95 || !/^[A-G][#b]?[^/]*\/[A-G][#b]?$/.test(t)) return;
+      if(!repeatedHighSlashRows.has(t)) repeatedHighSlashRows.set(t,new Set());
+      repeatedHighSlashRows.get(t).add(b.rescueHighHCluster);
+    });
+    const repeatedHighSlashOK = new Set();
+    boxes.forEach((b,i)=>{
+      const t=norm(texts[i]||'');
+      if((confidences[i]||0)>=0.95 && (repeatedHighSlashRows.get(t)?.size||0)>=2) repeatedHighSlashOK.add(i);
+    });
+    // 이미 확정된 페이지 root·bass가 각각 충분한 완전 slash는 고확신이면 단독으로,
+    // 또는 같은 완전 slash가 기존 후보에서 확인됐으면 더 낮은 확신도로도 허용한다.
+    const vocabularyHighSlashOK = new Set();
+    boxes.forEach((b,i)=>{
+      if(!b.rescueHighH) return;
+      const t=norm(texts[i]||''),m=/^([A-G][#b]?)[^/]*\/([A-G][#b]?)$/.exec(t),c=confidences[i]||0;
+      if(!m || (confirmedRootCounts.get(m[1])||0)<3 || (confirmedRootCounts.get(m[2])||0)<3) return;
+      if(c>=0.99 || (c>=0.80 && (confirmedChordCounts.get(t)||0)>=1)) vocabularyHighSlashOK.add(i);
+    });
+    // 큰 손글씨 후보가 통과했을 때, 그 후보를 가로로 완전히 삼키는 매우 넓은 기존 박스는
+    // 여러 글자/기호가 잘못 합쳐진 중복일 수 있다. 세로로도 실제 겹치는 경우만 제거한다.
+    const shadowedOrdinary = new Set();
+    boxes.forEach((b,i)=>{
+      if(b.rescueHighH || !isChordLike(texts[i]||'')) return;
+      const bw=b.x1-b.x0,bh=b.y1-b.y0;
+      boxes.forEach((q,j)=>{
+        if(!q.rescueHighH) return;
+        const selective=selectiveHighOK.has(q.rescueHighHCluster) && (confidences[j]||0)>=0.98;
+        if(!highRecoveryOK.has(q.rescueHighHCluster) && !minorDashOK.has(q.rescueHighHCluster) && !minorVocabOK.has(j) && !slashNarrowOK.has(j) && !splitSlashOK.has(j) && !repeatedHighSlashOK.has(j) && !vocabularyHighSlashOK.has(j) && !selective) return;
+        const qt=norm(texts[j]||'');
+        if(q.detachedMinorDash ? !/^[A-G][#b]?(?:m|-)?$/.test(qt) : !isChordLike(qt)) return;
+        const qw=q.x1-q.x0,qh=q.y1-q.y0;
+        const ix=Math.max(0,Math.min(b.x1,q.x1)-Math.max(b.x0,q.x0));
+        const iy=Math.max(0,Math.min(b.y1,q.y1)-Math.max(b.y0,q.y0));
+        if(bw>=qw*4 && ix/Math.max(1,qw)>=0.80 && iy/Math.max(1,qh)>=0.20) shadowedOrdinary.add(i);
+      });
+    });
     boxes.forEach((box, i) => {
-      const text = texts[i];
+      if(shadowedOrdinary.has(i)) return;
+      let text = texts[i] || '';
+      if(slashNarrowOK.has(i)) text=box.slashNarrowText;
+      if(splitSlashOK.has(i)) text=box.splitSlashText;
+      if(box.detachedMinorDash){
+        const m=/^([A-G][#b]?)(?:m|-)?$/.exec(norm(text));
+        if(!m) return;
+        text=m[1]+'m';
+      }
       if(!isChordLike(text)) return; // 모델 출력이 코드 문법과 안 맞으면 (음표머리 등으로 판단) 버림
       // 낮은 높이 rescue 후보는 숫자 텐션/7th가 실제 판독된 경우만 허용.
       // 실측: 세상 모든 민족이의 G2 두 개 복구, 일반 악보의 G/D/E 오탐은 차단.
@@ -2856,6 +3386,10 @@ async function runOcr(){
           if(a < 1.60) return;
         }
       }
+      if(box.rescueHighH){
+        const selective=selectiveHighOK.has(box.rescueHighHCluster) && (confidences[i]||0)>=0.98;
+        if(!highRecoveryOK.has(box.rescueHighHCluster) && !minorDashOK.has(box.rescueHighHCluster) && !minorVocabOK.has(i) && !slashNarrowOK.has(i) && !splitSlashOK.has(i) && !repeatedHighSlashOK.has(i) && !vocabularyHighSlashOK.has(i) && !selective) return;
+      }
       // (모델 확신도는 필터로 쓰지 않는다: 실제 악보로 측정해보니 음표 기둥 조각에도
       //  0.99를 주는 과확신 성향이라 판별력이 없었다. 대신 크기·위치 필터로 걸러낸다.)
       // 회전 보정된 좌표계 → 원본 이미지 좌표계로 역회전 + 축소
@@ -2875,6 +3409,7 @@ async function runOcr(){
           sysGap = staffSystems[sysIdx].gap;
         }
       }
+      if(sysIdx >= 0 && staffSystems[sysIdx]?.stripRecovery && !stripRecoveryOK.has(sysIdx)) return;
       const outputText = norm(text);
       // probe-v7.14: 단독 A 중에서도 폭과 높이가 모두 작은 조각만 억제한다.
       // 실제 A가 가느다랗게 인쇄된 악보도 있으므로 폭만으로 버리지 않는다. 폭·높이는
